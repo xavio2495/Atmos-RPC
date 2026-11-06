@@ -10,7 +10,13 @@ const randomInt = (n) => crypto.getRandomValues(new Uint32Array(1))[0] % n;
 const randomAddress = () =>
   "0x" + Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, "0")).join("");
 
-export function createShaper({ request }) {
+// `open`: URLs whose lanes start at once. A lane that first appears when the user
+// becomes active is itself a signal, so every lane the caller will use should be
+// open from the start; the cost is constant traffic on each.
+// `intervals`: slot length per lane kind, to trade latency against constant load.
+// `seed`: call shapes the dummies copy before any real call has been seen, so a
+// lane's dummies look the same whether the user is idle or active.
+export function createShaper({ request, open = [], intervals = LANES, seed = [] }) {
   const lanes = new Map();
 
   function dummy(lane) {
@@ -37,8 +43,8 @@ export function createShaper({ request }) {
     const key = `${kind} ${url}`;
     let lane = lanes.get(key);
     if (!lane) {
-      lane = { url, kind, queue: [], recent: [] };
-      const interval = LANES[kind];
+      lane = { url, kind, queue: [], recent: seed.filter((c) => (c.method === "eth_getProof") === (kind === "proof")) };
+      const interval = intervals[kind];
       lane.timer = setTimeout(() => {
         tick(lane);
         lane.timer = setInterval(() => tick(lane), interval);
@@ -48,11 +54,15 @@ export function createShaper({ request }) {
     return lane;
   }
 
+  for (const url of open) for (const kind of Object.keys(LANES)) laneFor(url, kind);
+
   return {
     request(url, body) {
       if (body.method === "eth_sendRawTransaction") return request(url, body);
       const lane = laneFor(url, body.method === "eth_getProof" ? "proof" : "read");
-      lane.recent = [...lane.recent.slice(-7), { method: body.method, params: body.params ?? [] }];
+      // With a seed, dummies keep the seed's shapes; learning from real calls would
+      // shift their sizes exactly when the user becomes active.
+      if (!seed.length) lane.recent = [...lane.recent.slice(-7), { method: body.method, params: body.params ?? [] }];
       return new Promise((resolve, reject) => lane.queue.push({ body, resolve, reject }));
     },
     close() {

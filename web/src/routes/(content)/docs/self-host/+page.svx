@@ -53,7 +53,19 @@ ATMOS_CHECKPOINT=0x… npm start                       # or ATMOS_RUNTIME=chromi
 
 The host waits for a working route before it answers, which takes from about 15 seconds to two minutes. `GET /` reports the runtime, whether it is ready, and counts answers by kind.
 
-Set `ATMOS_SHAPE=1` to send every outgoing call on the constant-rate schedule: fixed-size batches on a fixed clock, so the number and timing of calls stop showing when the wallet is active. It adds latency, about one slot (2 s for reads, 4 s for proofs) to each call.
+Set `ATMOS_SHAPE=1` to send every outgoing call on the constant-rate schedule. Every provider gets a fixed number of calls on a fixed clock from the moment the host starts, with dummy calls filling the empty places, so the count and size of what leaves stop showing when the wallet is active.
+
+What it changes, measured on Sepolia: an observer of the host's outgoing traffic tried to tell 12-second windows of wallet activity from idle ones, using the best threshold chosen with hindsight.
+
+| | Requests per window | Bytes per window | Head (beacon) checks |
+|---|---|---|---|
+| Shaping off | 98.6 % right | 100 % right | 51.4 % (chance) |
+| Shaping on | 63.3 % (just above chance) | 59.2 % (chance) | 53.1 % (chance) |
+
+What it costs:
+- **Latency:** about one slot per call, at most 4 s for reads and 8 s for proofs.
+- **Constant load:** about 3 calls a second in total, sent to the providers around the clock whether or not anyone uses the wallet. That load is why shaping is off by default on free providers.
+- **What it doesn't hide:** the size of the providers' replies, which the exit can still see.
 
 ## Point a wallet at it
 

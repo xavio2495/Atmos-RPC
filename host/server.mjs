@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
+import { appendFileSync } from "node:fs";
 import { join, dirname, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -38,7 +39,17 @@ async function startNode() {
       });
     }
   }
-  const atmos = startAtmos({ checkpoint: CHECKPOINT, Worker: NymWorker, shape: SHAPE });
+  const traceFile = process.env.ATMOS_TRACE;
+  const trace = traceFile ? (e) => appendFileSync(traceFile, JSON.stringify(e) + "\n") : undefined;
+  // With tracing on, also record each request body as it enters the tunnel.
+  if (trace) {
+    const fetch = NymWorker.prototype.fetch;
+    NymWorker.prototype.fetch = function (url, init) {
+      trace({ t: Date.now(), wire: true, host: new URL(url).host, body: init?.body ? String(init.body).length : 0 });
+      return fetch.call(this, url, init);
+    };
+  }
+  const atmos = startAtmos({ checkpoint: CHECKPOINT, Worker: NymWorker, shape: SHAPE, trace });
   return { handle: atmos.handle, status: atmos.status };
 }
 
