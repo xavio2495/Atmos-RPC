@@ -554,6 +554,51 @@ ok(`host allowlist refused fetch and websocket to an RPC provider; the allowed h
   ok(`a response over the size cap is refused (${big.big})`);
 }
 
+// A peer that floods a WebSocket faster than the guest reads must not grow host
+// memory without bound: past the cap the bridge closes the socket with 1009.
+{
+  const Real = globalThis.WebSocket;
+  globalThis.WebSocket = class FloodSocket extends EventTarget {
+    static OPEN = 1;
+    constructor() {
+      super();
+      this.readyState = 0; this.protocol = ""; this.extensions = ""; this.binaryType = "blob";
+      setTimeout(() => {
+        this.readyState = 1;
+        this.dispatchEvent(new Event("open"));
+        for (let i = 0; i < 2600; i++) this.dispatchEvent(Object.assign(new Event("message"), { data: new ArrayBuffer(8192) }));
+      }, 10);
+    }
+    send() {}
+    close() { this.readyState = 3; }
+  };
+  try {
+    const flood = await interrogate(
+      `
+(async () => {
+  const out = { messages: 0 };
+  await new Promise((done) => {
+    const ws = new WebSocket("wss://localhost:1/");
+    ws.binaryType = "arraybuffer";
+    ws.onmessage = () => { out.messages++; };
+    ws.onclose = (ev) => { out.code = ev.code; out.reason = ev.reason; done(); };
+  });
+  anonRpcWorker.signalReady();
+  for (;;) {
+    const call = await anonRpcWorker.acceptCall();
+    call.respond({ status: 200, headers: [], body: new TextEncoder().encode(JSON.stringify(out)) });
+  }
+})();
+`,
+      { capabilities: { fetch: false, webSocket: true, web: true }, network: { policy: { allow: ["127.0.0.0/8", "::1/128"], hosts: ["localhost"] } }, limits: { deadlineMs: 20_000 } },
+    );
+    if (flood.code !== 1009) fail(`a flooding websocket was not closed at the queue cap: ${JSON.stringify(flood)}`);
+    ok(`a flooding websocket is closed at the queue cap (code ${flood.code}, "${flood.reason}", ${flood.messages} messages delivered first)`);
+  } finally {
+    globalThis.WebSocket = Real;
+  }
+}
+
 // A specifier answer that differs from the caller's pinned hash fails the boot.
 {
   const pub = await publish("anonRpcWorker.signalReady();");

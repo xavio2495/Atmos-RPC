@@ -23,13 +23,17 @@ export type WebSocketBridgeOptions = {
 };
 
 const DEFAULT_MAX_CONCURRENT = 16;
+// A WebSocket cannot be paused, so a peer sending faster than the guest reads
+// would grow this queue without bound. Past this many queued bytes the socket
+// is closed with 1009 ("message too big"), which the guest sees as a close.
+const MAX_QUEUED_BYTES = 8 * 1024 * 1024;
 
 type GuestEvent =
   | { type: "message"; text?: string; bytes?: Uint8Array }
   | { type: "close"; code: number; reason: string; wasClean: boolean }
   | { type: "error" };
 
-type Bridged = { ws: WebSocket; queue: GuestEvent[]; waiter?: () => void; closed: boolean };
+type Bridged = { ws: WebSocket; queue: GuestEvent[]; queued: number; waiter?: () => void; closed: boolean };
 
 function coded(code: string, message: string): Error {
   return Object.assign(new Error(message), { code });
@@ -54,6 +58,19 @@ export function installWebSocketBridge(rpc: Rpc, opts: WebSocketBridgeOptions = 
     b.waiter = undefined;
   };
 
+  const receive = (b: Bridged, ev: GuestEvent & { type: "message" }) => {
+    if (b.closed) return;
+    b.queued += ev.text?.length ?? ev.bytes?.byteLength ?? 0;
+    if (b.queued <= MAX_QUEUED_BYTES) return push(b, ev);
+    b.closed = true;
+    b.ws.close();
+    push(b, { type: "close", code: 1009, reason: "receive queue full", wasClean: false });
+  };
+
+  // Only sockets still open count towards the limit; a closed one waiting for
+  // the guest to read its close must not lock the guest out.
+  const openCount = () => [...live.values()].filter((b) => !b.closed).length;
+
   rpc.on("ws.connect", async (payload: GuestPayload) => {
     const { url, protocols } = (payload?.args ?? {}) as { url?: unknown; protocols?: unknown };
     let u: URL;
@@ -63,7 +80,7 @@ export function installWebSocketBridge(rpc: Rpc, opts: WebSocketBridgeOptions = 
       throw coded("protocol-error", `ws.connect: bad url (${String(url)})`);
     }
     if (u.protocol !== "wss:" && u.protocol !== "ws:") throw coded("protocol-error", `ws.connect: not a websocket url (${u.protocol})`);
-    if (live.size >= max) throw coded("queue-full", `ws.connect: ${max} websockets already open`);
+    if (openCount() >= max) throw coded("queue-full", `ws.connect: ${max} websockets already open`);
 
     const host = u.hostname.replace(/^\[|\]$/g, "");
     const named = policy.checkHost(host);
@@ -79,22 +96,25 @@ export function installWebSocketBridge(rpc: Rpc, opts: WebSocketBridgeOptions = 
 
     const ws = new WebSocket(u.href, Array.isArray(protocols) ? protocols.map(String) : []);
     ws.binaryType = "arraybuffer";
-    const b: Bridged = { ws, queue: [], closed: false };
+    const b: Bridged = { ws, queue: [], queued: 0, closed: false };
+    // Listeners go on before waiting for open: a frame delivered in the same task
+    // as the open event would otherwise be lost.
+    ws.addEventListener("message", (ev) => {
+      const d = ev.data;
+      receive(b, typeof d === "string" ? { type: "message", text: d } : { type: "message", bytes: new Uint8Array(d as ArrayBuffer) });
+    });
+    ws.addEventListener("close", (ev) => {
+      if (b.closed) return;
+      b.closed = true;
+      push(b, { type: "close", code: ev.code, reason: ev.reason, wasClean: ev.wasClean });
+    });
     await new Promise<void>((ok, fail) => {
       ws.addEventListener("open", () => ok(), { once: true });
       ws.addEventListener("error", () => fail(coded("network-error", `ws.connect: ${u.host} refused or unreachable`)), { once: true });
     });
+    ws.addEventListener("error", () => push(b, { type: "error" }));
     const id = nextId++;
     live.set(id, b);
-    ws.addEventListener("message", (ev) => {
-      const d = ev.data;
-      push(b, typeof d === "string" ? { type: "message", text: d } : { type: "message", bytes: new Uint8Array(d as ArrayBuffer) });
-    });
-    ws.addEventListener("error", () => push(b, { type: "error" }));
-    ws.addEventListener("close", (ev) => {
-      b.closed = true;
-      push(b, { type: "close", code: ev.code, reason: ev.reason, wasClean: ev.wasClean });
-    });
     return { value: { id, protocol: ws.protocol, extensions: ws.extensions } } satisfies GuestReply;
   });
 
@@ -102,6 +122,7 @@ export function installWebSocketBridge(rpc: Rpc, opts: WebSocketBridgeOptions = 
     const [id, b] = get(payload);
     while (!b.queue.length) await new Promise<void>((res) => (b.waiter = res));
     const ev = b.queue.shift()!;
+    if (ev.type === "message") b.queued -= ev.text?.length ?? ev.bytes?.byteLength ?? 0;
     if (ev.type === "close") live.delete(id);
     if (ev.type === "message" && ev.bytes) return { value: { type: "message", binary: true }, bytes: ev.bytes } satisfies GuestReply;
     return { value: ev } satisfies GuestReply;
