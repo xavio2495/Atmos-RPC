@@ -117,6 +117,8 @@ export function installSocketBridge(rpc: Rpc, opts: SocketBridgeOptions = {}): (
     // Resolve first, then dial the RESOLVED address. Checking a name and then
     // connecting by name leaves a window in which the answer can change — and
     // the guest controls the name, so it would control that window too.
+    const named = policy.checkHost(host);
+    if (!named.ok) throw coded("permission-denied", `socket.connect: ${named.why}`);
     let address: string;
     try {
       ({ address } = await lookup(host, { verbatim: true }));

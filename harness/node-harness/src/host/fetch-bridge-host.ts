@@ -83,6 +83,8 @@ export function installFetchBridge(rpc: Rpc, opts: FetchBridgeOptions = {}): () 
     // rather than a guarantee — a name whose answer changes in between could
     // still be reached. Closing that needs a custom dispatcher pinned to the
     // checked address; noted in README rather than pretended away.
+    const named = policy.checkHost(url.hostname);
+    if (!named.ok) throw coded("permission-denied", `fetch: ${named.why}`);
     let address: string;
     try {
       ({ address } = await lookup(url.hostname, { verbatim: true }));

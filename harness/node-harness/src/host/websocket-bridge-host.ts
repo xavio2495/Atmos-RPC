@@ -66,6 +66,8 @@ export function installWebSocketBridge(rpc: Rpc, opts: WebSocketBridgeOptions = 
     if (live.size >= max) throw coded("queue-full", `ws.connect: ${max} websockets already open`);
 
     const host = u.hostname.replace(/^\[|\]$/g, "");
+    const named = policy.checkHost(host);
+    if (!named.ok) throw coded("permission-denied", `ws.connect: ${named.why}`);
     let address: string;
     try {
       ({ address } = await lookup(host, { verbatim: true }));

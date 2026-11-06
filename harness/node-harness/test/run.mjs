@@ -478,6 +478,47 @@ if (!(ctorErr instanceof TypeError)) fail(`a cyclic config did not throw TypeErr
 ok(`non-plain values are refused: fetch rejects, constructor throws (${ctorErr.message})`);
 plainWorker.close();
 
+/* --- 7b. egress allowlist and expected hash (Atmos fork) --------------- */
+
+// A worker allowed only one host tries to reach an RPC provider directly, over
+// both fetch and WebSocket. Both must be refused before any lookup, while the
+// allowed host still answers.
+const egress = await interrogate(
+  `
+(async () => {
+  const out = {};
+  try { await fetch("https://ethereum-rpc.publicnode.com/"); out.provider = "REACHED"; } catch (e) { out.provider = e.code || e.message; }
+  await new Promise((done) => {
+    const ws = new WebSocket("wss://ethereum-rpc.publicnode.com/");
+    ws.onopen = () => { out.ws = "OPEN"; ws.close(); done(); };
+    ws.onclose = (ev) => { out.ws = out.ws || ev.reason; done(); };
+  });
+  try { out.allowed = (await fetch("https://validator.nymtech.net/api/v1/network/details")).status; } catch (e) { out.allowed = e.code || e.message; }
+  anonRpcWorker.signalReady();
+  for (;;) {
+    const call = await anonRpcWorker.acceptCall();
+    call.respond({ status: 200, headers: [], body: new TextEncoder().encode(JSON.stringify(out)) });
+  }
+})();
+`,
+  { capabilities: { fetch: true, webSocket: true, web: true }, network: { policy: { hosts: ["validator.nymtech.net"] } } },
+);
+if (egress.provider !== "permission-denied") fail(`fetch outside the host allowlist was not refused: ${JSON.stringify(egress)}`);
+if (egress.ws === "OPEN" || !/not an allowed host/.test(String(egress.ws))) fail(`websocket outside the host allowlist was not refused: ${JSON.stringify(egress)}`);
+if (egress.allowed !== 200) fail(`the allow-listed host was not reachable: ${JSON.stringify(egress)}`);
+ok(`host allowlist refused fetch and websocket to an RPC provider; the allowed host answered (${egress.allowed})`);
+
+// A specifier answer that differs from the caller's pinned hash fails the boot.
+{
+  const pub = await publish("anonRpcWorker.signalReady();");
+  const w = new AnonRpcWorker({ address: SPECIFIER, preExisting: { rpcProvider: pub.provider }, expectedHash: "0x" + "11".repeat(32) });
+  cleanups.push(() => w.close());
+  const err = await w.ready.then(() => null, (e) => e);
+  w.close();
+  if (!err || !/not the expected/.test(err.message)) fail(`a specifier hash other than expectedHash was accepted: ${err?.message ?? "booted"}`);
+  ok(`boot refused when the specifier hash differs from expectedHash (${err.message.slice(0, 50)}…)`);
+}
+
 /* --- 8. resource limits, which node:vm has no usable form of ----------- */
 
 // A guest that never yields, never returns, or eats all the memory it can.

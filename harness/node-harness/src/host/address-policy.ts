@@ -21,6 +21,12 @@ export type AddressPolicy = {
   allow?: string[];
   /** Permit every address, including the host's own network. Off by default. */
   allowAll?: boolean;
+  /**
+   * Hostnames the guest may reach, as exact names or "*.suffix". When set, any
+   * other name is refused before it is resolved, so a worker cannot send data
+   * from the host's address to anywhere outside its own network's entry points.
+   */
+  hosts?: string[];
 };
 
 export type Decision = { ok: true } | { ok: false; why: string };
@@ -80,9 +86,20 @@ export class Policy {
   #allow: Rule[];
   #allowAll: boolean;
 
+  #hosts?: string[];
+
   constructor(policy: AddressPolicy = {}) {
     this.#allow = (policy.allow ?? []).map(parseRule);
     this.#allowAll = policy.allowAll ?? false;
+    this.#hosts = policy.hosts?.map((h) => h.toLowerCase());
+  }
+
+  /** Checked on the name, before any lookup. */
+  checkHost(hostname: string): Decision {
+    if (!this.#hosts) return { ok: true };
+    const name = hostname.toLowerCase().replace(/\.$/, "");
+    const ok = this.#hosts.some((h) => (h.startsWith("*.") ? name.endsWith(h.slice(1)) : name === h));
+    return ok ? { ok: true } : { ok: false, why: `${hostname} is not an allowed host` };
   }
 
   /** `addr` must already be a resolved IP — never a hostname (see the bridge). */

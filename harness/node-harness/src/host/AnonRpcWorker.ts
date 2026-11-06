@@ -112,6 +112,13 @@ export type NodeWorkerInit = WorkerInit & {
    * trusted.
    */
   bundleCacheDir?: string;
+
+  /**
+   * The worker hash the caller expects. The specifier read is a single answer
+   * from a bootstrap provider, which can lie; with this set, a different
+   * `workerHash` fails the boot before any bundle is loaded or run.
+   */
+  expectedHash?: string;
 };
 
 async function loadBundle(spec: Awaited<ReturnType<typeof readSpecifier>>, cacheDir?: string): Promise<Uint8Array> {
@@ -193,6 +200,9 @@ export class AnonRpcWorker {
     // whose keccak256 matches. This happens on the HOST, before the isolate
     // exists — the bytes are verified before anything is asked to run them.
     const spec = await readSpecifier(provider, init.address);
+    if (init.expectedHash && spec.workerHash.toLowerCase() !== init.expectedHash.toLowerCase()) {
+      throw Object.assign(new Error(`specifier workerHash ${spec.workerHash} is not the expected ${init.expectedHash}`), { code: "hash-mismatch" });
+    }
     const bundle = await loadBundle(spec, init.bundleCacheDir);
 
     const capabilities = {
