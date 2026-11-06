@@ -51,6 +51,8 @@ await build({
   ...common,
   entryPoints: ["src/child/isolate-thread.ts"],
   outfile: `${outdir}/isolate-thread.js`,
+  // A native addon: resolved at runtime, never bundled.
+  external: ["isolated-vm"],
 });
 
 // The superseded node:vm path, still built so its e2e keeps running.

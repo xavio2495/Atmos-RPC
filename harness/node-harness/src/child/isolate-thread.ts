@@ -20,7 +20,8 @@
 
 import { parentPort, workerData } from "node:worker_threads";
 import { webcrypto } from "node:crypto";
-import { Isolate, type IsolateCapabilities } from "./isolate.js";
+import type { IsolateCapabilities } from "./isolate.js";
+import { Isolate } from "./isolate-v8.js";
 import { Rpc, type PortLike } from "../protocol.js";
 
 if (!parentPort) throw new Error("isolate-thread must be run as a worker_thread");
