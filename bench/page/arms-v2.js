@@ -2,10 +2,21 @@ import { createAtmosClient } from "../../client/atmos.js";
 import { createVerifiedReader } from "../../client/verify.js";
 import { createShaper } from "../../client/shape.js";
 
-const BEACON = "https://ethereum-beacon-api.publicnode.com";
-// Finalized mainnet block root at slot 15594784, the light client's trust anchor.
-const CHECKPOINT = "0x4f9c06cba2f0413722b917774787fd05a0fd28bfaec7d5a9d209b10028021092";
+// Two independent mainnet beacon APIs; the first also serves the light client.
+const BEACONS = ["https://ethereum-beacon-api.publicnode.com", "https://lodestar-mainnet.chainsafe.io"];
 const PROOF_PROVIDERS = ["https://rpc.mevblocker.io", "https://ethereum-rpc.publicnode.com", "https://eth.drpc.org"];
+
+// The light client's trust anchor: the caller's, or the finalized block root that both
+// beacon APIs report, read through the client so it leaves over the mixnet too.
+async function checkpointFor(opts, client) {
+  if (opts.checkpoint) return opts.checkpoint;
+  for (let i = 0; i < 3; i++) {
+    const roots = await Promise.all(BEACONS.map((b) => client.fetch(b + "/eth/v1/beacon/headers/finalized").then((r) => r.json()).then((j) => j.data.root)));
+    if (roots[0] === roots[1]) return roots[0];
+    await new Promise((r) => setTimeout(r, 12_000));
+  }
+  throw new Error("beacon APIs disagree on the finalized root");
+}
 
 async function bootAtmos(opts, t0, out, bootstrapProvider, clientOpts = {}) {
   out.events = [];
@@ -27,10 +38,12 @@ export const v2Arms = ({ workload, bootstrapProvider }) => ({
     const { client, log } = await bootAtmos(opts, t0, out, bootstrapProvider, clientOpts);
     if (!client) return;
     try {
-      const beaconGet = (path) => client.fetch(BEACON + path).then((r) => r.json());
+      const beaconGet = (path) => client.fetch(BEACONS[0] + path).then((r) => r.json());
       let reader;
       try {
-        reader = await createVerifiedReader({ request: client.request, beaconGet, checkpoint: CHECKPOINT, providers: PROOF_PROVIDERS, log });
+        const checkpoint = await checkpointFor(opts, client);
+        out.boot.checkpoint = checkpoint;
+        reader = await createVerifiedReader({ request: client.request, beaconGet, checkpoint, providers: PROOF_PROVIDERS, log });
       } catch (e) {
         out.boot.error = "verifier: " + String(e?.message ?? e).slice(0, 70);
         return;
