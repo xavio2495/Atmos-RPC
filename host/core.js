@@ -14,17 +14,50 @@ const LOCAL = {
   web3_clientVersion: "atmos-host/0.1",
 };
 
-// The worker bootstraps from mainnet: its hash is read from the mainnet registry.
-const bootstrapProvider = {
-  request: async ({ method, params }) => {
-    const r = await fetch(BOOTSTRAP_RPC, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: params ?? [] }),
-    });
-    return (await r.json()).result;
-  },
-};
+// The worker bootstraps from mainnet: its hash and download locations are read
+// from the mainnet specifier. The host answers both from pinned values instead,
+// so a boot sends nothing to an RPC provider from the host's own address. The
+// bundle still has to match the pinned hash, so a stale download list can only
+// make a boot fail, never run a different worker.
+const NYM_SPECIFIER = "0x3acd9742c68f6d993066ae25533e09b9e1f60ed0";
+const NYM_WORKER_HASH = "0xf13a448a8721b9d0b20da3d5b80ffe00bf4c5bb3aae812a38d3d1e3bc81fceb8";
+const NYM_RESOLVERS = [
+  "https://cdn.jsdelivr.net/npm/@nymproject/anon-rpc-worker@0.1.0/dist/nym-anon-rpc-worker.js",
+  "https://unpkg.com/@nymproject/anon-rpc-worker@0.1.0/dist/nym-anon-rpc-worker.js",
+  "https://raw.githubusercontent.com/nymtech/anon-rpc-worker/keccak/f1/3a448a8721b9d0b20da3d5b80ffe00bf4c5bb3aae812a38d3d1e3bc81fceb8",
+];
+const SEL_WORKER_HASH = "0x3898587d";
+const SEL_WORKER_RESOLVERS = "0x1c67ff29";
+
+// ABI encoding of string[], as the specifier's workerResolvers() returns it.
+function abiStringArray(list) {
+  const word = (n) => BigInt(n).toString(16).padStart(64, "0");
+  const hexOf = (u) => Array.from(new TextEncoder().encode(u), (b) => b.toString(16).padStart(2, "0")).join("");
+  const parts = list.map((u) => { const h = hexOf(u); return word(h.length / 2) + h.padEnd(Math.ceil(h.length / 64) * 64, "0"); });
+  let offset = 32 * list.length;
+  const heads = parts.map((p) => { const o = offset; offset += p.length / 2; return word(o); });
+  return "0x" + word(32) + word(list.length) + heads.join("") + parts.join("");
+}
+
+function makeBootstrapProvider(log) {
+  return {
+    request: async ({ method, params }) => {
+      const call = method === "eth_call" ? params?.[0] : null;
+      if (call && String(call.to).toLowerCase() === NYM_SPECIFIER) {
+        if (call.data === SEL_WORKER_HASH) return NYM_WORKER_HASH;
+        if (call.data === SEL_WORKER_RESOLVERS) return abiStringArray(NYM_RESOLVERS);
+      }
+      // Anything else goes out directly, and is logged so a boot test can see it.
+      log({ event: "bootstrap-network", method });
+      const r = await fetch(BOOTSTRAP_RPC, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: params ?? [] }),
+      });
+      return (await r.json()).result;
+    },
+  };
+}
 
 const latest = (tag) => tag === undefined || tag === "latest";
 
@@ -55,7 +88,7 @@ export function startAtmos({ checkpoint, Worker, shape = false, trace, log = (e)
     // Routes rotate about every 10 minutes, so no single route's timing lasts
     // longer than that (measured cost at a 2-minute period: about +90 ms p50).
     client = await createAtmosClient({
-      bootstrapProvider,
+      bootstrapProvider: makeBootstrapProvider(log),
       probeUrl: PROVIDERS[0],
       log,
       rotateMs: 10 * 60_000,
