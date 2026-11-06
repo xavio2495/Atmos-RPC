@@ -10,7 +10,7 @@ const post = (url, body) => fetch(url, { method: "POST", headers: { "content-typ
 const get = (p) => fetch(BEACON + p).then((r) => r.json());
 const checkpoint = (await get("/eth/v1/beacon/headers/finalized")).data.root;
 const reader = await createVerifiedReader({ request: post, beaconGet: get, checkpoint, providers: [U], chain: SEPOLIA });
-const ex = createExecutor({ reader, chainId: SEPOLIA.chainId });
+const ex = createExecutor({ reader, chain: SEPOLIA });
 let failed = 0;
 const check = (ok, what) => { console.log(ok ? "  ✓" : "  ✗", what); if (!ok) failed++; };
 
@@ -23,6 +23,8 @@ for (const t of [WETH, USDC, UNI]) {
   for (const h of holders) calls.push({ to: t, data: "0x70a08231" + pad(h) });
   calls.push({ to: t, data: "0xdd62ed3e" + pad(holders[0]) + pad(holders[1]) });
 }
+// Block context: BLOBBASEFEE and BLOCKHASH(number - 1), returned by init code.
+calls.push({ data: "0x4a5f5260205ff3" }, { data: "0x4360019003405f5260205ff3" });
 let same = 0;
 const t0 = performance.now();
 for (const c of calls) {
@@ -43,6 +45,14 @@ for (const c of calls) {
 }
 const perCall = Math.round((performance.now() - t0) / calls.length);
 check(same === calls.length, `local eth_call equals the provider's on ${same}/${calls.length} calls (${perCall - 400} ms per call, direct)`);
+
+// Execution rules must belong to the consensus fork: a chain table that stops at
+// Fulu, while the library schedules Amsterdam, fails the call rather than running it.
+{
+  const stale = createExecutor({ reader, chain: { ...SEPOLIA, forks: SEPOLIA.forks.slice(0, 2) } });
+  const r = await stale.call({ to: WETH, data: "0x18160ddd" }).then(() => "accepted", (e) => e.message);
+  check(/do not match/.test(r), `execution rules that do not match the chain's fork are refused (${r})`);
+}
 
 // Receipts: real ones prove against the block's receipts root; a tampered log does not.
 {
@@ -97,6 +107,17 @@ lying.close(); forged?.close?.();
     else console.log(`    differs: ${method} ${String(mine).slice(0, 50)} vs ${String(theirs).slice(0, 50)}`);
   }
   check(ok === reads.length, `mainnet verified reads equal the provider's at the same block (${ok}/${reads.length})`);
+  // Mainnet's blob base fee is above the minimum, so this checks the fee formula and fraction.
+  const mex = createExecutor({ reader: m, chain: MAINNET });
+  let ctx = 0;
+  for (const data of ["0x4a5f5260205ff3", "0x4360019003405f5260205ff3"]) {
+    const at = "0x" + (await m.head()).number.toString(16);
+    const mine = await mex.call({ data }).catch((e) => "ERR " + e.message);
+    const theirs = (await post(M, { jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ data }, at] })).result;
+    if (mine === theirs) ctx++;
+    else console.log(`    differs at ${at}: ${data}: ${mine} vs ${theirs}`);
+  }
+  check(ctx === 2, `mainnet BLOBBASEFEE and BLOCKHASH equal the provider's (${ctx}/2)`);
   m.close();
 }
 

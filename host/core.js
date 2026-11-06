@@ -117,7 +117,7 @@ export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false
       chain: SEPOLIA,
       log,
     });
-    executor = createExecutor({ reader, chainId: SEPOLIA.chainId });
+    executor = createExecutor({ reader, chain: SEPOLIA });
     receipts = createReceiptChecker({ reader });
   })();
 
