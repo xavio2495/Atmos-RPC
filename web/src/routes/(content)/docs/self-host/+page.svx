@@ -55,12 +55,14 @@ The host waits for a working route before it answers, which takes from about 15 
 
 Set `ATMOS_SHAPE=1` to send every outgoing call on the constant-rate schedule. Every provider gets a fixed number of calls on a fixed clock from the moment the host starts, with dummy calls filling the empty places, so the count and size of what leaves stop showing when the wallet is active.
 
-What it changes, measured on Sepolia: an observer of the host's outgoing traffic tried to tell 12-second windows of wallet activity from idle ones, using the best threshold chosen with hindsight.
+What it changes, measured on Sepolia: an observer of the host's outgoing traffic tried to tell 12-second windows of wallet activity from idle ones, using the best threshold chosen with hindsight. 50 % is chance; each figure was compared with 2,000 shuffles of the idle and busy labels.
 
 | | Requests per window | Bytes per window | Head (beacon) checks |
 |---|---|---|---|
-| Shaping off | 98.6 % right | 100 % right | 51.4 % (chance) |
-| Shaping on | 63.3 % (just above chance) | 59.2 % (chance) | 53.1 % (chance) |
+| Shaping off | 98.6 % right | 98.6 % right | 51.4 % (chance) |
+| Shaping on | 52.1 % (chance) | 60.4 % (chance) | 50.0 % (chance) |
+
+In shaped mode every request body is also padded to 2 KB, so each one enters the mixnet at the same size; the observer's accuracy on bytes in the tunnel was 56.9 %, again chance.
 
 What it costs:
 - **Latency:** about one slot per call, at most 4 s for reads and 8 s for proofs.
