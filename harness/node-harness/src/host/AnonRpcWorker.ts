@@ -100,6 +100,8 @@ export type NodeWorkerInit = WorkerInit & {
     maxConcurrent?: number;
     /** The `fetch` the host performs with. Injectable so tests need no network. */
     fetchImpl?: typeof fetch;
+    /** Largest response body handed to the guest; the bridge stops reading past it. */
+    maxResponseBytes?: number;
   };
 
   /** Guest heap cap and execution deadline. See isolate.ts. */
@@ -233,6 +235,7 @@ export class AnonRpcWorker {
         installFetchBridge(rpc, {
           policy: init.network?.policy,
           fetchImpl: init.network?.fetchImpl,
+          maxResponseBytes: init.network?.maxResponseBytes,
         }),
       );
     }

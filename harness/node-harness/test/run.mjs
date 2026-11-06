@@ -508,6 +508,52 @@ if (egress.ws === "OPEN" || !/not an allowed host/.test(String(egress.ws))) fail
 if (egress.allowed !== 200) fail(`the allow-listed host was not reachable: ${JSON.stringify(egress)}`);
 ok(`host allowlist refused fetch and websocket to an RPC provider; the allowed host answered (${egress.allowed})`);
 
+// A redirect is a new destination and must pass the same checks. An allowed host
+// redirecting to a disallowed one must not be followed, and the size cap must
+// hold while the body is read, not after.
+{
+  const target = createServer((req, res) => {
+    if (req.url === "/hop") { res.writeHead(302, { location: `http://127.0.0.1:${target.address().port}/secret` }).end(); return; }
+    if (req.url === "/big") { res.writeHead(200); res.end(Buffer.alloc(3 * 1024 * 1024)); return; }
+    res.writeHead(200).end("SECRET");
+  });
+  await new Promise((ok) => target.listen(0, "127.0.0.1", ok));
+  cleanups.push(() => target.close());
+  const port = target.address().port;
+  const redirect = await interrogate(
+    `
+(async () => {
+  const out = {};
+  try { const r = await fetch("http://localhost:${port}/hop"); out.hop = r.status + " " + (await r.text()); } catch (e) { out.hop = e.code || e.message; }
+  anonRpcWorker.signalReady();
+  for (;;) {
+    const call = await anonRpcWorker.acceptCall();
+    call.respond({ status: 200, headers: [], body: new TextEncoder().encode(JSON.stringify(out)) });
+  }
+})();
+`,
+    { capabilities: { fetch: true }, network: { policy: { allow: ["127.0.0.0/8", "::1/128"], hosts: ["localhost"] } } },
+  );
+  if (/SECRET/.test(String(redirect.hop))) fail(`a redirect to a host outside the allowlist was followed: ${JSON.stringify(redirect)}`);
+  ok(`a redirect to a host outside the allowlist is not followed (${redirect.hop})`);
+  const big = await interrogate(
+    `
+(async () => {
+  const out = {};
+  try { const r = await fetch("http://localhost:${port}/big"); out.big = (await r.arrayBuffer()).byteLength; } catch (e) { out.big = e.code || e.message; }
+  anonRpcWorker.signalReady();
+  for (;;) {
+    const call = await anonRpcWorker.acceptCall();
+    call.respond({ status: 200, headers: [], body: new TextEncoder().encode(JSON.stringify(out)) });
+  }
+})();
+`,
+    { capabilities: { fetch: true }, network: { policy: { allow: ["127.0.0.0/8", "::1/128"], hosts: ["localhost"] }, maxResponseBytes: 1024 * 1024 } },
+  );
+  if (big.big !== "resource-limit") fail(`a response over the size cap was not refused: ${JSON.stringify(big)}`);
+  ok(`a response over the size cap is refused (${big.big})`);
+}
+
 // A specifier answer that differs from the caller's pinned hash fails the boot.
 {
   const pub = await publish("anonRpcWorker.signalReady();");

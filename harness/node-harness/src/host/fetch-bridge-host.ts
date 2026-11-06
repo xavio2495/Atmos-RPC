@@ -39,6 +39,25 @@ export type FetchBridgeOptions = {
 
 const DEFAULT_MAX_CONCURRENT = 16;
 const DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
+const MAX_REDIRECTS = 5;
+
+/** Reads a body, aborting as soon as it passes `max` bytes. */
+async function readCapped(response: Response, max: number, ac: AbortController): Promise<ArrayBuffer> {
+  if (!response.body) return new ArrayBuffer(0);
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+    total += chunk.byteLength;
+    if (total > max) {
+      ac.abort();
+      throw coded("resource-limit", `fetch: response is over ${max} bytes`);
+    }
+    chunks.push(chunk);
+  }
+  // A copy of exactly these bytes: Buffer.concat may return a view into Node's
+  // shared pool, whose backing buffer also holds other data.
+  return Uint8Array.prototype.slice.call(Buffer.concat(chunks)).buffer as ArrayBuffer;
+}
 
 function coded(code: string, message: string): Error {
   const e = new Error(message);
@@ -53,6 +72,27 @@ export function installFetchBridge(rpc: Rpc, opts: FetchBridgeOptions = {}): () 
   const maxBytes = opts.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   const impl = opts.fetchImpl ?? fetch;
   const inFlight = new Set<AbortController>();
+
+  // Same discipline as socket.connect: the name must be allowed, then resolve
+  // and decide on the RESOLVED address. Node's fetch resolves again when it
+  // dials, so this is a check rather than a guarantee — a name whose answer
+  // changes in between could still be reached. Closing that needs a custom
+  // dispatcher pinned to the checked address.
+  async function checkDestination(url: URL): Promise<void> {
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw coded("permission-denied", `fetch: ${url.protocol} is not allowed`);
+    }
+    const named = policy.checkHost(url.hostname);
+    if (!named.ok) throw coded("permission-denied", `fetch: ${named.why}`);
+    let address: string;
+    try {
+      ({ address } = await lookup(url.hostname, { verbatim: true }));
+    } catch (e) {
+      throw coded("network-error", `fetch: cannot resolve ${url.hostname}: ${(e as Error).message}`);
+    }
+    const decision = policy.check(address);
+    if (!decision.ok) throw coded("permission-denied", `fetch: ${url.hostname} → ${decision.why}`);
+  }
 
   rpc.on("fetch", async (payload: GuestPayload, ctx) => {
     const req = (payload?.args ?? {}) as {
@@ -74,27 +114,7 @@ export function installFetchBridge(rpc: Rpc, opts: FetchBridgeOptions = {}): () 
     } catch {
       throw coded("protocol-error", `fetch: not a valid URL: ${req.url}`);
     }
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      throw coded("permission-denied", `fetch: ${url.protocol} is not allowed`);
-    }
-
-    // Same discipline as socket.connect: resolve, then decide on the RESOLVED
-    // address. Node's fetch resolves again when it dials, so this is a check
-    // rather than a guarantee — a name whose answer changes in between could
-    // still be reached. Closing that needs a custom dispatcher pinned to the
-    // checked address; noted in README rather than pretended away.
-    const named = policy.checkHost(url.hostname);
-    if (!named.ok) throw coded("permission-denied", `fetch: ${named.why}`);
-    let address: string;
-    try {
-      ({ address } = await lookup(url.hostname, { verbatim: true }));
-    } catch (e) {
-      throw coded("network-error", `fetch: cannot resolve ${url.hostname}: ${(e as Error).message}`);
-    }
-    const decision = policy.check(address);
-    if (!decision.ok) {
-      throw coded("permission-denied", `fetch: ${url.hostname} → ${decision.why}`);
-    }
+    await checkDestination(url);
 
     const ac = new AbortController();
     inFlight.add(ac);
@@ -107,20 +127,30 @@ export function installFetchBridge(rpc: Rpc, opts: FetchBridgeOptions = {}): () 
             (h) => Array.isArray(h) && typeof h[0] === "string" && typeof h[1] === "string",
           )
         : [];
-      const response = await impl(url, {
-        method: typeof req.method === "string" ? req.method : "GET",
-        headers,
-        ...(payload?.bytes?.byteLength ? { body: payload.bytes } : {}),
-        ...(req.redirect === "follow" || req.redirect === "error" || req.redirect === "manual"
-          ? { redirect: req.redirect }
-          : {}),
-        signal: ac.signal,
-      });
-
-      const buf = await response.arrayBuffer();
-      if (buf.byteLength > maxBytes) {
-        throw coded("resource-limit", `fetch: response is ${buf.byteLength} bytes (limit ${maxBytes})`);
+      // Redirects are followed here, not by the fetch implementation, so every
+      // hop passes the same checks as the first URL. Following them blindly would
+      // let any allowed host send the guest anywhere, including the host's own
+      // network. 303, and 301/302 on POST, become GET as the platform does.
+      const mode = req.redirect === "error" || req.redirect === "manual" ? req.redirect : "follow";
+      let method = typeof req.method === "string" ? req.method : "GET";
+      let body = payload?.bytes?.byteLength ? payload.bytes : undefined;
+      let response: Response;
+      for (let hops = 0; ; hops++) {
+        response = await impl(url, { method, headers, ...(body ? { body } : {}), redirect: "manual", signal: ac.signal });
+        const location = response.headers.get("location");
+        if (response.status < 300 || response.status > 399 || !location || mode === "manual") break;
+        if (mode === "error") throw coded("network-error", "fetch: redirected, and redirect is \"error\"");
+        if (hops >= MAX_REDIRECTS) throw coded("network-error", `fetch: more than ${MAX_REDIRECTS} redirects`);
+        url = new URL(location, url);
+        await checkDestination(url);
+        if (response.status === 303 || ((response.status === 301 || response.status === 302) && method === "POST")) {
+          method = "GET";
+          body = undefined;
+        }
       }
+
+      // The cap holds while reading: a body is never buffered past it.
+      const buf = await readCapped(response, maxBytes, ac);
       const outHeaders: [string, string][] = [];
       response.headers.forEach((v, k) => outHeaders.push([k, v]));
 
