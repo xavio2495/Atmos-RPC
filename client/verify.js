@@ -1,6 +1,7 @@
 import { bls12_381 } from "@noble/curves/bls12-381";
 import { sha256 } from "@noble/hashes/sha2";
 import { keccak_256 } from "@noble/hashes/sha3";
+import { bytesToHex, hexToBytes, concatBytes } from "@noble/hashes/utils";
 
 // Fork epochs and versions from Electra on. A later fork changes the signing domain,
 // so its heads fail to verify until it is added here. From Gloas the light-client
@@ -36,24 +37,27 @@ const MAX_HEADER_WALK = 64;
 // The priority fee has no verifiable answer; a provider's suggestion is capped at this.
 const MAX_TIP_WEI = 2_000_000_000n;
 
-const hex = (b) => "0x" + Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
-const bytes = (h) => {
-  const s = h.startsWith("0x") ? h.slice(2) : h;
-  return Uint8Array.from(s.match(/../g) ?? [], (x) => parseInt(x, 16));
-};
-const concat = (...a) => {
-  const out = new Uint8Array(a.reduce((n, x) => n + x.length, 0));
-  let o = 0;
-  for (const x of a) { out.set(x, o); o += x.length; }
-  return out;
-};
+const hex = (b) => "0x" + bytesToHex(b);
+const bytes = (h) => hexToBytes(h.startsWith("0x") ? h.slice(2) : h);
+const concat = concatBytes;
 const equal = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 const quantity = (b) => "0x" + (b.length ? BigInt(hex(b)).toString(16) : "0");
+// Minimal big-endian bytes of a quantity: zero is empty, as RLP wants.
+const quantityBytes = (v) => {
+  const s = BigInt(v).toString(16);
+  return s === "0" ? new Uint8Array() : bytes(s.length % 2 ? "0" + s : s);
+};
 
 // SSZ hash_tree_root pieces for the few containers a light client needs.
 const chunk = (b) => { const c = new Uint8Array(32); c.set(b); return c; };
-const uint64 = (v) => { const c = new Uint8Array(32); let n = BigInt(v); for (let i = 0; i < 8; i++) { c[i] = Number(n & 255n); n >>= 8n; } return c; };
-const uint256 = (v) => { const c = new Uint8Array(32); let n = BigInt(v); for (let i = 0; i < 32; i++) { c[i] = Number(n & 255n); n >>= 8n; } return c; };
+// A little-endian integer of `width` bytes in a 32-byte chunk.
+const le = (v, width) => {
+  const c = new Uint8Array(32);
+  for (let i = 0, n = BigInt(v); i < width; i++, n >>= 8n) c[i] = Number(n & 255n);
+  return c;
+};
+const uint64 = (v) => le(v, 8);
+const uint256 = (v) => le(v, 32);
 function merkleize(chunks, limit = chunks.length) {
   let width = 1;
   while (width < limit) width *= 2;
@@ -100,18 +104,27 @@ function branchOk(leaf, branch, depth, index, root) {
 const period = (slot) => Math.floor(Number(slot) / SLOTS_PER_PERIOD);
 const layout = (chain, slot) => (Math.floor(Number(slot) / 32) >= chain.gloasEpoch ? BRANCH.gloas : BRANCH.electra);
 
+// A committee's public keys, parsed once: a committee serves a whole period
+// (~27 h), and parsing 512 keys costs far more than adding them.
+const parsedKeys = new WeakMap();
+const keysOf = (committee) => {
+  let keys = parsedKeys.get(committee);
+  if (!keys) parsedKeys.set(committee, (keys = committee.pubkeys.map((p) => bls12_381.G1.Point.fromHex(p.slice(2)))));
+  return keys;
+};
+
 function syncSignatureOk(chain, committee, aggregate, header, signatureSlot) {
   const bits = bytes(aggregate.sync_committee_bits);
-  const signers = committee.pubkeys.filter((_, i) => (bits[i >> 3] >> (i & 7)) & 1);
+  const signers = keysOf(committee).filter((_, i) => (bits[i >> 3] >> (i & 7)) & 1);
   if (signers.length * 3 < committee.pubkeys.length * 2) return false;
   const epoch = Math.floor((Math.max(Number(signatureSlot), 1) - 1) / 32);
-  const fork = [...chain.forks].reverse().find(([e]) => epoch >= e);
+  const fork = chain.forks.findLast(([e]) => epoch >= e);
   if (!fork) return false;
   const forkDataRoot = merkleize([chunk(bytes(fork[1])), bytes(chain.genesisValidatorsRoot)]);
   const domain = concat(Uint8Array.of(7, 0, 0, 0), forkDataRoot.slice(0, 28));
   const signingRoot = merkleize([beaconRoot(header), domain]);
   const sigs = bls12_381.longSignatures;
-  return sigs.verify(aggregate.sync_committee_signature.slice(2), sigs.hash(signingRoot, DST), sigs.aggregatePublicKeys(signers.map((p) => p.slice(2))));
+  return sigs.verify(aggregate.sync_committee_signature.slice(2), sigs.hash(signingRoot, DST), sigs.aggregatePublicKeys(signers));
 }
 
 // RLP decoding, enough for trie nodes and account values.
@@ -135,7 +148,7 @@ function rlpItem(b, o) {
 function rlpEncode(x) {
   const len = (n, base) => {
     if (n < 56) return Uint8Array.of(base + n);
-    const l = bytes(n.toString(16).padStart(2 * Math.ceil(n.toString(16).length / 2), "0"));
+    const l = quantityBytes(n);
     return concat(Uint8Array.of(base + 55 + l.length), l);
   };
   if (Array.isArray(x)) { const body = concat(...x.map(rlpEncode)); return concat(len(body.length, 0xc0), body); }
@@ -150,11 +163,7 @@ const HEADER_FIELDS = [
   ["requestsHash"], ["blockAccessListHash"], ["slotNumber", 1],
 ];
 const headerHash = (h) =>
-  hex(keccak_256(rlpEncode(HEADER_FIELDS.filter(([k]) => h[k] !== undefined).map(([k, isQuantity]) => {
-    if (!isQuantity) return bytes(h[k]);
-    const n = BigInt(h[k]);
-    return n === 0n ? new Uint8Array() : bytes(n.toString(16).padStart(2 * Math.ceil(n.toString(16).length / 2), "0"));
-  }))));
+  hex(keccak_256(rlpEncode(HEADER_FIELDS.filter(([k]) => h[k] !== undefined).map(([k, isQuantity]) => (isQuantity ? quantityBytes(h[k]) : bytes(h[k]))))));
 
 const nibbles = (b) => Array.from(b).flatMap((x) => [x >> 4, x & 15]);
 
@@ -275,16 +284,21 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
   ticker.unref?.();
 
   // One call, tried on each provider in turn; only this call moves on, not its batch.
+  // A throttled provider gets one more try after a short pause before moving on.
   async function onProviders(body, check, order = providers) {
     let last;
     for (const url of order) {
-      try {
-        const r = await request(url, body);
-        if (r.error) throw new Error(r.error.message);
-        return check(r.result);
-      } catch (e) {
-        last = e;
-        log({ event: "verify-retry", url, method: body.method, reason: String(e?.message ?? e).slice(0, 80) });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const r = await request(url, body);
+          if (r.error) throw new Error(r.error.message);
+          return check(r.result);
+        } catch (e) {
+          last = e;
+          log({ event: "verify-retry", url, method: body.method, reason: String(e?.message ?? e).slice(0, 80) });
+          if (attempt || !/rate limit|too many requests|429/i.test(String(e?.message))) break;
+          await new Promise((r) => setTimeout(r, 1000));
+        }
       }
     }
     throw last;
