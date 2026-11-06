@@ -1,14 +1,11 @@
 import { createMPT } from "@ethereumjs/mpt";
 import { RLP } from "@ethereumjs/rlp";
-import { hexToBytes, bytesToHex } from "@ethereumjs/util";
+import { hexToBytes, bytesToHex, bigIntToUnpaddedBytes, concatBytes } from "@ethereumjs/util";
 
 // Blocks whose receipts stay cached once proven.
 const MAX_BLOCKS = 32;
 
-const quantity = (h) => {
-  const s = BigInt(h).toString(16);
-  return s === "0" ? new Uint8Array() : hexToBytes("0x" + (s.length % 2 ? "0" : "") + s);
-};
+const quantity = (h) => bigIntToUnpaddedBytes(BigInt(h));
 
 // The consensus encoding of a receipt: type byte (if typed) then RLP of
 // [status, cumulativeGasUsed, logsBloom, logs].
@@ -20,11 +17,7 @@ function encodeReceipt(r) {
     r.logs.map((l) => [hexToBytes(l.address), l.topics.map(hexToBytes), hexToBytes(l.data)]),
   ]);
   const type = Number(r.type);
-  if (type === 0) return body;
-  const out = new Uint8Array(body.length + 1);
-  out[0] = type;
-  out.set(body, 1);
-  return out;
+  return type === 0 ? body : concatBytes(Uint8Array.of(type), body);
 }
 
 // Receipts proven by rebuilding the block's receipts trie and matching it to the

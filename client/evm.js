@@ -8,6 +8,7 @@ const RULES = { 1: [Mainnet, Hardfork.Osaka], 11155111: [Sepolia, Hardfork.Amste
 // Each run that touches unproven state fetches it and runs again, at most this often.
 const MAX_ROUNDS = 6;
 const ZERO = "0x" + "0".repeat(64);
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 const big = (h) => (h === undefined || h === null ? undefined : BigInt(h));
 const slotKey = (b) => "0x" + bytesToHex(b).slice(2).padStart(64, "0");
@@ -24,12 +25,15 @@ class ProvenState extends SimpleStateManager {
     if (!this.missing.has(address)) this.missing.set(address, new Set());
     if (slot) this.missing.get(address).add(slot);
   }
-  async getAccount(address) {
+  #proven(address) {
     if (!this.known.has(address.toString())) this.#need(address.toString());
+  }
+  async getAccount(address) {
+    this.#proven(address);
     return super.getAccount(address);
   }
   async getCode(address) {
-    if (!this.known.has(address.toString())) this.#need(address.toString());
+    this.#proven(address);
     return super.getCode(address);
   }
   async getStorage(address, key) {
@@ -67,7 +71,7 @@ export function createExecutor({ reader, chainId }) {
       }
     }
     const evm = await createEVM({ common, stateManager: state });
-    const caller = createAddressFromString(tx.from ?? "0x0000000000000000000000000000000000000000");
+    const caller = createAddressFromString(tx.from ?? ZERO_ADDRESS);
     const result = await evm.runCall({
       caller,
       origin: caller,
@@ -108,7 +112,7 @@ export function createExecutor({ reader, chainId }) {
       if (slot) wanted.get(address).add(slot);
     };
     // The EVM always reads the caller, which defaults to the zero address.
-    want(tx.from ?? "0x0000000000000000000000000000000000000000");
+    want(tx.from ?? ZERO_ADDRESS);
     if (tx.to) want(tx.to);
     want(header.miner);
     // The accounts known up front are proven while the access-list hint is in

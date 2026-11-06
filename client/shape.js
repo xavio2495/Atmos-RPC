@@ -29,14 +29,18 @@ export function createShaper({ request, open = [], intervals = LANES, seed = [] 
   }
 
   function tick(lane) {
-    const real = lane.queue.splice(0, BATCH);
-    const calls = real.map((r) => r.body);
-    while (calls.length < BATCH) calls.push(dummy(lane));
-    // Real and dummy calls leave in the same tick, in random order, so the transport sends one batch.
-    const order = calls.map((c) => [randomInt(1e9), c]).sort((a, b) => a[0] - b[0]).map(([, c]) => c);
-    const replies = new Map(order.map((c) => [c, request(lane.url, c)]));
-    for (const p of replies.values()) p.catch(() => {});
-    for (const r of real) replies.get(r.body).then(r.resolve, r.reject);
+    const slot = lane.queue.splice(0, BATCH);
+    while (slot.length < BATCH) slot.push({ body: dummy(lane) });
+    // Fisher-Yates: real and dummy calls leave in one tick, in random order, so the
+    // transport sends one batch whose order says nothing about which are real.
+    for (let i = slot.length - 1; i > 0; i--) {
+      const j = randomInt(i + 1);
+      [slot[i], slot[j]] = [slot[j], slot[i]];
+    }
+    for (const { body, resolve, reject } of slot) {
+      const reply = request(lane.url, body);
+      resolve ? reply.then(resolve, reject) : reply.catch(() => {});
+    }
   }
 
   function laneFor(url, kind) {
