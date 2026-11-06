@@ -19,7 +19,7 @@ Run it yourself to keep anon-rpc's guarantees. A host run by someone else still 
 
 ## Run it
 
-You need a trusted Sepolia beacon block root as the starting point. Take a recent finalized root from more than one source and check they agree.
+You need a trusted Sepolia beacon block root as the starting point. Take a recent finalized root from more than one source and check they agree. The light-client source does not serve every root: if `GET /` reports `bootstrap not served for checkpoint`, start again with another recent finalized root.
 
 The worker can run in one of two places, set by `ATMOS_RUNTIME`:
 
