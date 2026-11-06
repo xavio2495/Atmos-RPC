@@ -111,11 +111,11 @@ createServer(async (req, res) => {
   if (req.method !== "POST" || path !== `/${CHAIN_ID}`) return send(res, 404, rpcError(null, -32601, "use POST /" + CHAIN_ID));
 
   const ip = req.socket.remoteAddress;
-  if ((inflight.get(ip) ?? 0) >= MAX_INFLIGHT_PER_IP) return send(res, 429, rpcError(null, -32005, "too many requests"));
-  inflight.set(ip, (inflight.get(ip) ?? 0) + 1);
+  const count = inflight.get(ip) ?? 0;
+  if (count >= MAX_INFLIGHT_PER_IP) return send(res, 429, rpcError(null, -32005, "too many requests"));
+  inflight.set(ip, count + 1);
   try {
-    let body = "";
-    for await (const chunk of req) body += chunk;
+    const body = Buffer.concat(await Array.fromAsync(req)).toString();
     let parsed;
     try { parsed = JSON.parse(body); } catch { return send(res, 200, rpcError(null, -32700, "parse error")); }
     if (Array.isArray(parsed)) {
