@@ -77,9 +77,12 @@ const SHAPED_SEED = [
 // schedule), so call timing and count stop showing activity. Costs latency.
 // `trace`: called with every request as it leaves for the network (after any
 // shaping), for measuring what an exit or provider can observe.
-export function startAtmos({ checkpoint, Worker, shape = false, trace, log = (e) => console.log(JSON.stringify(e)) }) {
+// `prefetch`: keep the wallet's recent verifiable reads re-proven at every new
+// verified block, and answer a repeat from that block's result. Never answers
+// with anything older than the current verified head. Off by default.
+export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false, trace, log = (e) => console.log(JSON.stringify(e)) }) {
   // "advisory": the call is proven not to revert, but the gas figure is the provider's.
-  const counts = { verified: 0, advisory: 0, plain: 0, local: 0, failed: 0 };
+  const counts = { verified: 0, advisory: 0, plain: 0, local: 0, failed: 0, prefetched: 0 };
   let reader, client, executor, receipts, transport;
 
   const ready = (async () => {
@@ -149,7 +152,7 @@ export function startAtmos({ checkpoint, Worker, shape = false, trace, log = (e)
 
   // One JSON-RPC call in, one response out. Calls the verifier can't check go to
   // the first provider unverified and are counted, so the host's share is visible.
-  async function handle(body) {
+  async function answer(body) {
     await ready;
     if (body.method in LOCAL) {
       counts.local++;
@@ -175,5 +178,56 @@ export function startAtmos({ checkpoint, Worker, shape = false, trace, log = (e)
     }
   }
 
-  return { handle, status: () => ({ counts, ready: Boolean(reader) }), ready };
+  const PREFETCHABLE = new Set(["eth_getBalance", "eth_getTransactionCount", "eth_getCode", "eth_getStorageAt", "eth_call"]);
+  const WORKING_SET_MAX = 32;
+  const WORKING_SET_KEEP_MS = 5 * 60_000;
+  const workingSet = new Map();
+  const atLatest = (body) => latest((body.params ?? [])[body.method === "eth_getStorageAt" ? 2 : 1]);
+
+  async function handle(body) {
+    if (!prefetch || !PREFETCHABLE.has(body.method) || !atLatest(body)) return answer(body);
+    await ready;
+    const key = JSON.stringify([body.method, body.params]);
+    const number = (await reader.head()).number;
+    const entry = workingSet.get(key);
+    if (entry) {
+      entry.lastUsed = Date.now();
+      if (entry.block === number && entry.reply) {
+        counts.prefetched++;
+        return { ...entry.reply, id: body.id };
+      }
+    }
+    const reply = await answer(body);
+    if (workingSet.has(key) || workingSet.size < WORKING_SET_MAX) {
+      workingSet.set(key, { body, lastUsed: Date.now(), block: number, reply: reply.error ? null : reply });
+    }
+    return reply;
+  }
+
+  // On each new verified head, re-prove every read the wallet used recently.
+  if (prefetch) {
+    let seen = -1;
+    ready.then(() => setInterval(async () => {
+      const number = (await reader.head()).number;
+      if (number === seen) return;
+      seen = number;
+      for (const [key, e] of workingSet) {
+        if (Date.now() - e.lastUsed > WORKING_SET_KEEP_MS) { workingSet.delete(key); continue; }
+        answer(e.body).then(
+          (reply) => { e.block = number; e.reply = reply.error ? null : reply; },
+          () => { e.reply = null; },
+        );
+      }
+    }, 2_000).unref?.(), () => {});
+  }
+
+  // A failed start (no route, or the light client could not bootstrap) is
+  // reported through status and to callers, rather than ending the process.
+  let startError;
+  ready.catch((e) => {
+    startError = String(e?.message ?? e).slice(0, 200);
+    log({ event: "start-failed", reason: startError });
+  });
+
+  return { handle, status: () => ({ counts, ready: Boolean(reader), ...(startError ? { error: startError } : {}) }), ready };
 }

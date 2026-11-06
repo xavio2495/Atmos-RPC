@@ -107,7 +107,8 @@ export function createExecutor({ reader, chainId }) {
       if (!wanted.has(address)) wanted.set(address, new Set());
       if (slot) wanted.get(address).add(slot);
     };
-    if (tx.from) want(tx.from);
+    // The EVM always reads the caller, which defaults to the zero address.
+    want(tx.from ?? "0x0000000000000000000000000000000000000000");
     if (tx.to) want(tx.to);
     want(header.miner);
     // The accounts known up front are proven while the access-list hint is in

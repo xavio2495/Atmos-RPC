@@ -197,8 +197,20 @@ function trieGet(root, key, proof) {
 // falling back to the others only on failure, so no single provider sees every
 // address the wallet reads.
 export async function createVerifiedReader({ request, beaconGet, checkpoint, providers, chain = MAINNET, split = false, log = () => {} }) {
-  const boot = (await beaconGet(`/eth/v1/beacon/light_client/bootstrap/${checkpoint}`)).data;
-  if (!boot) throw new Error("bootstrap not served for checkpoint");
+  // The first beacon request on a new route can fail in transit, which is not the
+  // same as the checkpoint being unknown, so it is tried a few times.
+  let boot, last;
+  for (let attempt = 0; attempt < 3 && !boot; attempt++) {
+    try {
+      const r = await beaconGet(`/eth/v1/beacon/light_client/bootstrap/${checkpoint}`);
+      boot = r?.data;
+      last = boot ? undefined : String(r?.message ?? JSON.stringify(r)).slice(0, 120);
+    } catch (e) {
+      last = String(e?.message ?? e).slice(0, 120);
+    }
+    if (!boot) log({ event: "bootstrap-retry", attempt, reason: last });
+  }
+  if (!boot) throw new Error(`bootstrap not served for checkpoint (${last})`);
   if (hex(beaconRoot(boot.header.beacon)) !== checkpoint.toLowerCase()) throw new Error("bootstrap does not match checkpoint");
   if (!branchOk(committeeRoot(boot.current_sync_committee), boot.current_sync_committee_branch, ...layout(chain, boot.header.beacon.slot).current, boot.header.beacon.state_root)) {
     throw new Error("bad bootstrap committee");

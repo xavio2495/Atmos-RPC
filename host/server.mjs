@@ -15,6 +15,8 @@ const MAX_INFLIGHT_PER_IP = 20;
 const RUNTIME = process.env.ATMOS_RUNTIME ?? "node";
 // Constant-rate schedule for all outgoing calls (see core.js). Off by default.
 const SHAPE = process.env.ATMOS_SHAPE === "1";
+// Re-prove the wallet's recent reads at each new block and answer repeats from them. Off by default.
+const PREFETCH = process.env.ATMOS_PREFETCH === "1";
 
 if (!/^0x[0-9a-fA-F]{64}$/.test(CHECKPOINT ?? "")) {
   console.error("ATMOS_CHECKPOINT must be a trusted Sepolia beacon block root (0x + 64 hex)");
@@ -49,7 +51,7 @@ async function startNode() {
       return fetch.call(this, url, init);
     };
   }
-  const atmos = startAtmos({ checkpoint: CHECKPOINT, Worker: NymWorker, shape: SHAPE, trace });
+  const atmos = startAtmos({ checkpoint: CHECKPOINT, Worker: NymWorker, shape: SHAPE, prefetch: PREFETCH, trace });
   return { handle: atmos.handle, status: atmos.status };
 }
 
@@ -104,7 +106,7 @@ createServer(async (req, res) => {
   const path = new URL(req.url, "http://x").pathname.replace(/\/$/, "");
   if (req.method === "OPTIONS") return send(res, 204, null);
   if (req.method === "GET" && path === "") {
-    return send(res, 200, { name: "atmos-host", chains: [Number(CHAIN_ID)], runtime: RUNTIME, shaped: SHAPE, ...(await status()) });
+    return send(res, 200, { name: "atmos-host", chains: [Number(CHAIN_ID)], runtime: RUNTIME, shaped: SHAPE, prefetch: PREFETCH, ...(await status()) });
   }
   if (req.method !== "POST" || path !== `/${CHAIN_ID}`) return send(res, 404, rpcError(null, -32601, "use POST /" + CHAIN_ID));
 
