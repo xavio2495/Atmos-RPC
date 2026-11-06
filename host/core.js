@@ -60,6 +60,7 @@ function makeBootstrapProvider(log) {
 }
 
 const latest = (tag) => tag === undefined || tag === "latest";
+const replyTo = (body, result) => ({ jsonrpc: "2.0", id: body.id, result });
 
 const SHAPED_INTERVALS = { read: 4_000, proof: 8_000 };
 const ANY = "0x0000000000000000000000000000000000000000";
@@ -98,27 +99,18 @@ export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false
       ...(Worker ? { Worker } : {}),
       ...(shape ? { padBytes: 2048 } : {}),
     });
-    const wire = trace
-      ? (url, body) => {
-          trace({ t: Date.now(), host: new URL(url).host, calls: Array.isArray(body) ? body.length : 1, bytes: JSON.stringify(body).length });
-          return client.request(url, body);
-        }
-      : client.request;
-    const fetchWire = trace
-      ? (url, init) => {
-          trace({ t: Date.now(), host: new URL(url).host, calls: 1, bytes: 0, get: true });
-          return client.fetch(url, init);
-        }
-      : client.fetch;
+    // With tracing on, each request is recorded as it leaves for the network.
+    const traced = (send, describe) => (trace ? (url, x) => (trace({ t: Date.now(), host: new URL(url).host, ...describe(x) }), send(url, x)) : send);
+    const wire = traced(client.request, (body) => ({ calls: Array.isArray(body) ? body.length : 1, bytes: JSON.stringify(body).length }));
+    const fetchWire = traced(client.fetch, () => ({ calls: 1, bytes: 0, get: true }));
     // Shaped: every provider's lanes open at boot, on a slower clock than the
     // default (constant load is about 3 calls a second in total), and dummies
     // start from a fixed mix of wallet-like calls.
-    const send = shape
+    transport = shape
       ? createShaper({ request: wire, open: PROVIDERS, intervals: SHAPED_INTERVALS, seed: SHAPED_SEED }).request
       : wire;
-    transport = send;
     reader = await createVerifiedReader({
-      request: send,
+      request: transport,
       beaconGet: (path) => fetchWire(BEACON + path).then((r) => r.json()),
       checkpoint,
       providers: PROVIDERS,
@@ -134,20 +126,18 @@ export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false
     const [tx, tag] = body.params ?? [];
     if (!tx || !latest(tag)) return null;
     if (body.method === "eth_call") {
-      try {
-        const result = await executor.call(tx);
-        counts.verified++;
-        return { jsonrpc: "2.0", id: body.id, result };
-      } catch (e) {
-        if (e.code !== 3) throw e;
-        counts.verified++;
-        return { jsonrpc: "2.0", id: body.id, error: { code: 3, message: e.message, data: e.data } };
-      }
+      // A revert is a verified answer too; any other failure is not.
+      const outcome = await executor.call(tx).then(
+        (result) => ({ result }),
+        (e) => { if (e.code !== 3) throw e; return { error: { code: 3, message: e.message, data: e.data } }; },
+      );
+      counts.verified++;
+      return { jsonrpc: "2.0", id: body.id, ...outcome };
     }
     const estimate = await reader.hint({ jsonrpc: "2.0", id: body.id, method: "eth_estimateGas", params: [tx] });
     const result = await executor.estimateGas(tx, estimate);
     counts.advisory++;
-    return { jsonrpc: "2.0", id: body.id, result };
+    return replyTo(body, result);
   }
 
   // One JSON-RPC call in, one response out. Calls the verifier can't check go to
@@ -156,12 +146,12 @@ export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false
     await ready;
     if (body.method in LOCAL) {
       counts.local++;
-      return { jsonrpc: "2.0", id: body.id, result: LOCAL[body.method] };
+      return replyTo(body, LOCAL[body.method]);
     }
     if (body.method === "eth_getTransactionReceipt") {
       const result = await receipts.receipt(body.params[0]);
       counts[result ? "verified" : "advisory"]++;
-      return { jsonrpc: "2.0", id: body.id, result };
+      return replyTo(body, result);
     }
     if (body.method === "eth_call" || body.method === "eth_estimateGas") {
       const r = await execute(body);
