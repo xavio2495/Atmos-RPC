@@ -1,0 +1,18 @@
+# atmos-host with the worker in the Node harness: no browser in the image.
+ARG BASE=node:24-bookworm-slim
+FROM ${BASE}
+WORKDIR /app
+COPY harness/package.json harness/package.json
+COPY harness/node-harness/package.json harness/node-harness/package.json
+COPY harness/passthrough-worker/package.json harness/passthrough-worker/package.json
+RUN cd harness && npm install --no-audit --no-fund
+COPY host/package.json host/package.json
+RUN cd host && npm install --no-audit --no-fund --omit=optional
+COPY client client
+COPY harness harness
+COPY host host
+RUN cd harness && npm run build && cd ../host && npm run build
+WORKDIR /app/host
+ENV HOST=0.0.0.0 PORT=8545 ATMOS_RUNTIME=node PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+EXPOSE 8545
+CMD ["node", "--dns-result-order=ipv4first", "server.mjs"]

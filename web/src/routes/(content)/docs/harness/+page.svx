@@ -1,0 +1,53 @@
+<svelte:head>
+	<title>Node harness · Atmos docs</title>
+</svelte:head>
+
+<span class="eyebrow">Docs · Harness</span>
+
+# A Node harness for browser-built workers
+
+<p class="lede">anon-rpc's Node harness runs a hash-pinned worker inside a sandbox where it starts with nothing and every capability is a host grant. Atmos forks it so that a worker built for the browser, such as the Nym worker, can run there too.</p>
+
+## Why fork it
+
+The upstream harness runs workers in a QuickJS interpreter compiled to WebAssembly. QuickJS has no WebAssembly engine of its own, and the Nym worker is a 10 MB WebAssembly client that also opens a WebSocket to its entry gateway. Neither is available in the upstream sandbox, so the Nym worker cannot start there.
+
+## What changed
+
+| | Upstream | Atmos fork |
+|---|---|---|
+| Sandbox | QuickJS, interpreted | a separate V8 isolate (isolated-vm) |
+| WebAssembly | none | V8's own; the promise forms are built on the synchronous ones |
+| Guest JavaScript speed | about 50× slower than V8 | V8 speed |
+| `fetch` | granted, host-performed, address policy | unchanged |
+| WebSocket | none | granted (`webSocket`), host-opened under the same address policy |
+| Browser platform pieces | none | granted (`web`): base64, Blob URLs, an in-sandbox Worker and MessageChannel, Request, events, DOMException |
+| Bundle | fetched from the resolvers each boot | optional cache by hash, rechecked on every load |
+
+The guest still starts with nothing: no `process`, no `require`, no module loader, no network of its own. `web` adds only pure computation. `webSocket` and `fetch` are the only ways out, and both go through the host's address policy.
+
+## How it is tested
+
+- **Upstream's own suite** passes unchanged on the V8 sandbox. It checks the realm escape, the missing ambient platform, the address policy, and hostile workers: an infinite loop, deep recursion and heap exhaustion. All three are contained, and the host survives.
+- **A live Nym boot** loads the hash-pinned worker, initialises its WebAssembly client, opens the WebSocket to an entry gateway and registers there.
+
+## What is not yet shown
+
+A full Nym boot through the Node harness, ready and answering a call, has not been seen yet. During testing, exit-router handshakes timed out after 12 seconds. At the same time, the same worker failed to boot in headless Chromium through the browser harness too, so the network was failing for both. Until a full boot is seen, the [self-hosted endpoint](/docs/self-host/) keeps Chromium as its default.
+
+## Use it
+
+```js
+import { AnonRpcWorker } from "./harness/node-harness/dist/host.js";
+
+const worker = new AnonRpcWorker({
+  address: "0x3aCD9742C68F6d993066Ae25533e09b9e1f60eD0", // Nym worker, mainnet specifier
+  preExisting: { rpcProvider },
+  capabilities: { fetch: true, webSocket: true, web: true },
+  limits: { memoryBytes: 1024 ** 3, deadlineMs: 60_000 },
+  bundleCacheDir: ".bundles",
+});
+await worker.ready;
+```
+
+`createAtmosClient` takes the class as its `Worker` option, so the Atmos client runs on either harness unchanged.

@@ -21,24 +21,37 @@ Run it yourself to keep anon-rpc's guarantees. A host run by someone else still 
 
 You need a trusted Sepolia beacon block root as the starting point. Take a recent finalized root from more than one source and check they agree.
 
+The worker can run in one of two places, set by `ATMOS_RUNTIME`:
+
+| Runtime | Where the worker runs | Image | Status |
+|---|---|---|---|
+| `chromium` (default) | anon-rpc's browser harness, in headless Chromium | about 3.8 GB | verified end to end on Sepolia |
+| `node` | the [Node harness](/docs/harness/), in a V8 isolate with no browser | Node base image | boots to gateway registration; a full boot is not yet verified |
+
 With Docker, from the repository root:
 
 ```sh
+# Chromium runtime
 docker build -f host/Dockerfile -t atmos-host .
 docker run -p 8545:8545 -e ATMOS_CHECKPOINT=0x… atmos-host
+
+# Node runtime
+docker build -f host/Dockerfile.node -t atmos-host:node .
+docker run -p 8545:8545 -e ATMOS_CHECKPOINT=0x… atmos-host:node
 ```
 
-From source, with Node 20 or later:
+From source, with Node 24 or later:
 
 ```sh
+cd harness && npm install && npm run build && cd ..   # Node runtime only
 cd host
 npm install
-npx playwright install chromium
+npx playwright install chromium                     # Chromium runtime only
 npm run build
-ATMOS_CHECKPOINT=0x… npm start
+ATMOS_CHECKPOINT=0x… npm start                       # or ATMOS_RUNTIME=node ATMOS_CHECKPOINT=0x… npm start
 ```
 
-The host waits for a working route before it answers, which takes from about 15 seconds to two minutes. `GET /` reports whether it is ready, and counts answers by kind.
+The host waits for a working route before it answers, which takes from about 15 seconds to two minutes. `GET /` reports the runtime, whether it is ready, and counts answers by kind.
 
 ## Point a wallet at it
 
