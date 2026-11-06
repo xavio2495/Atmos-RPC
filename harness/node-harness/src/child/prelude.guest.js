@@ -1321,7 +1321,10 @@
       send(data) {
         if (this.readyState !== 1) throw codedError("InvalidStateError", "WebSocket is not open");
         if (typeof data === "string") return post("ws.send", { id: this._id, text: data });
-        const u = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+        // Blobs hold their bytes here synchronously, so sending one keeps frame order.
+        const u = data instanceof Blob ? data._bytes
+          : data instanceof ArrayBuffer ? new Uint8Array(data)
+          : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
         post("ws.send", { id: this._id }, u.slice().buffer);
       }
       close(code, reason) {
