@@ -625,6 +625,9 @@ for (const [label, body, want] of [
   ["infinite loop", "for(;;){}", /interrupt/i],
   ["deep recursion", "(function f(){ return f() })()", /stack overflow/i],
   ["heap exhaustion", "const a=[]; for(;;) a.push(new Uint8Array(1<<20));", /memory/i],
+  // Loops released later by the host: a promise reaction after a call arrives, and a timer.
+  ["loop in a promise reaction", "(async () => { await anonRpcWorker.acceptCall(); for(;;){} })();", /interrupt/i],
+  ["loop in a timer", "setTimeout(() => { for(;;){} }, 50);", /interrupt/i],
 ]) {
   const pub = await publish(`anonRpcWorker.signalReady(); ${body}`);
   const w = new AnonRpcWorker({
