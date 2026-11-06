@@ -110,7 +110,13 @@ export function createExecutor({ reader, chainId }) {
     if (tx.from) want(tx.from);
     if (tx.to) want(tx.to);
     want(header.miner);
-    const hint = await reader.hint({ jsonrpc: "2.0", id: 6, method: "eth_createAccessList", params: [tx, block] }).catch(() => null);
+    // The accounts known up front are proven while the access-list hint is in
+    // flight, so the hint's round trip overlaps theirs.
+    const upfront = new Map([...wanted].map(([a, s]) => [a, new Set(s)]));
+    const [hint] = await Promise.all([
+      reader.hint({ jsonrpc: "2.0", id: 6, method: "eth_createAccessList", params: [tx, block] }).catch(() => null),
+      load(known, upfront, head),
+    ]);
     for (const e of hint?.accessList ?? []) {
       want(e.address);
       for (const k of e.storageKeys) want(e.address, "0x" + k.slice(2).padStart(64, "0"));

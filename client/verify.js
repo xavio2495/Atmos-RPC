@@ -296,6 +296,10 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
     const proof = { jsonrpc: "2.0", id: 1, method: "eth_getProof", params: [address, slots, block] };
     const first = split ? keccak_256(bytes(address))[0] % providers.length : 0;
     const order = [...providers.slice(first), ...providers.slice(0, first)];
+    // The code is requested with the proof rather than after it, and checked
+    // against the proven code hash once both have arrived: one round trip, not two.
+    const codeReply = withCode ? onProviders({ jsonrpc: "2.0", id: 2, method: "eth_getCode", params: [address, block] }, (c) => c, order) : null;
+    codeReply?.catch(() => {});
     const a = await onProviders(proof, (p) => {
       const value = trieGet(head.stateRoot, bytes(address), p.accountProof);
       const [nonce, balance, storageRoot, codeHash] = value ? rlpDecode(value) : [new Uint8Array(), new Uint8Array(), bytes(EMPTY_TRIE), bytes(EMPTY_CODE)];
@@ -309,10 +313,9 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
       return { exists: Boolean(value), nonce: quantity(nonce), balance: quantity(balance), storageRoot: hex(storageRoot), codeHash: hex(codeHash), storage };
     }, order);
     if (withCode) {
-      a.code = a.codeHash === EMPTY_CODE ? "0x" : await onProviders({ jsonrpc: "2.0", id: 2, method: "eth_getCode", params: [address, block] }, (c) => {
-        if (hex(keccak_256(bytes(c))) !== a.codeHash) throw new Error("code does not match code hash");
-        return c;
-      }, order);
+      const code = a.codeHash === EMPTY_CODE ? "0x" : await codeReply;
+      if (hex(keccak_256(bytes(code))) !== a.codeHash) throw new Error("code does not match code hash");
+      a.code = code;
     }
     if (hit && head.number === cacheBlock) {
       a.storage = { ...hit.storage, ...a.storage };
