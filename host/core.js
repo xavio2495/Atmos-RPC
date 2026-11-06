@@ -52,7 +52,16 @@ export function startAtmos({ checkpoint, Worker, shape = false, trace, log = (e)
   const ready = (async () => {
     // Shaped mode also pads every request body to a fixed size (in 2 KB steps),
     // so batch sizes stop showing what is inside them.
-    client = await createAtmosClient({ bootstrapProvider, probeUrl: PROVIDERS[0], log, ...(Worker ? { Worker } : {}), ...(shape ? { padBytes: 2048 } : {}) });
+    // Routes rotate about every 10 minutes, so no single route's timing lasts
+    // longer than that (measured cost at a 2-minute period: about +90 ms p50).
+    client = await createAtmosClient({
+      bootstrapProvider,
+      probeUrl: PROVIDERS[0],
+      log,
+      rotateMs: 10 * 60_000,
+      ...(Worker ? { Worker } : {}),
+      ...(shape ? { padBytes: 2048 } : {}),
+    });
     const wire = trace
       ? (url, body) => {
           trace({ t: Date.now(), host: new URL(url).host, calls: Array.isArray(body) ? body.length : 1, bytes: JSON.stringify(body).length });
