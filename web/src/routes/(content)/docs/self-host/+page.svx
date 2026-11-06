@@ -1,0 +1,67 @@
+<svelte:head>
+	<title>Self-host · Atmos docs</title>
+</svelte:head>
+
+<span class="eyebrow">Docs · Guide</span>
+
+# Run an Atmos endpoint
+
+<p class="lede">A wallet that only takes an RPC URL, such as MetaMask, can still use Atmos. `atmos-host` is an open-source server that gives the wallet an ordinary URL and sends every call on through Nym, checked against a light client. Sepolia only, for now.</p>
+
+## Who sees what
+
+| Where the host runs | The host's operator sees | RPC providers see | Who the wallet trusts |
+|---|---|---|---|
+| Your own machine | nothing beyond you | your queries, not your IP | your own host, which checks the proofs |
+| Someone else's server | your IP and your queries | your queries, not your IP | that operator: the wallet can't check proofs itself |
+
+Run it yourself to keep anon-rpc's guarantees. A host run by someone else still keeps your IP from the providers, and any operator can be swapped for another, but that operator could answer falsely.
+
+## Run it
+
+You need a trusted Sepolia beacon block root as the starting point. Take a recent finalized root from more than one source and check they agree.
+
+With Docker, from the repository root:
+
+```sh
+docker build -f host/Dockerfile -t atmos-host .
+docker run -p 8545:8545 -e ATMOS_CHECKPOINT=0x… atmos-host
+```
+
+From source, with Node 20 or later:
+
+```sh
+cd host
+npm install
+npx playwright install chromium
+npm run build
+ATMOS_CHECKPOINT=0x… npm start
+```
+
+The host waits for a working route before it answers, which takes from about 15 seconds to two minutes. `GET /` reports whether it is ready, and counts answers by kind.
+
+## Point a wallet at it
+
+Add `http://127.0.0.1:8545/11155111` as an RPC endpoint for Sepolia (chain ID 11155111). The path selects the chain; other paths return an error.
+
+## What gets checked
+
+| Calls | How |
+|---|---|
+| `eth_chainId`, `net_version` | answered locally |
+| `eth_getBalance`, `eth_getTransactionCount`, `eth_getCode`, `eth_getStorageAt` | proven with `eth_getProof` against the verified head |
+| `eth_blockNumber`, `eth_getBlockByNumber` / `ByHash` without transactions | the header hashes to a block hash the light client trusts (within 64 blocks of the head) |
+| `eth_call` | executed locally on proven state; a revert comes back as a revert |
+| `eth_getTransactionReceipt` | the block's receipts rebuild its receipts root |
+| `eth_estimateGas` | the call is proven to succeed; the gas figure itself is the provider's |
+| `eth_gasPrice`, `eth_maxPriorityFeePerGas` | base fee from a verified header; the tip is the provider's, capped at 2 gwei |
+| `eth_sendRawTransaction` | sent on; the returned hash must equal the transaction's hash |
+| anything else | passed through unchecked, and counted |
+
+A check that fails returns an error. It never falls back to an unchecked answer.
+
+## Costs
+
+- A verified read takes about 1–2 seconds; `eth_call` 3–8 seconds.
+- The first receipt from a block takes 20–40 seconds, because the whole block's receipts come through the mixnet. Later receipts from the same block are immediate.
+- Each host allows 20 calls in flight per client address and batches of up to 20.

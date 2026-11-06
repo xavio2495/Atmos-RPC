@@ -1,6 +1,6 @@
 <script lang="ts">
 	import BurstChart from '#lib/components/BurstChart.svelte';
-	import { run, type Arm } from '#lib/data/bench.ts';
+	import { run, regions, type Arm } from '#lib/data/bench.ts';
 
 	const labels = Object.fromEntries(run.arms.map((a) => [a.arm, a.label])) as Record<Arm, string>;
 	const ms = (v: number | null) =>
@@ -15,13 +15,16 @@
 <span class="eyebrow">Benchmarks</span>
 <h1>Stock anon-rpc against Atmos, from the cloud</h1>
 <p class="lede">
-	The same wallet-shaped workload runs in three arms: plain fetch, the stock anon-rpc Nym worker,
-	and Atmos v1 on top of that same worker. Each session runs headless Chromium in a Cloud Run job,
-	so no tab is ever throttled in the background.
+	The same wallet-shaped workload runs in each arm: plain fetch, the stock anon-rpc Nym worker,
+	Atmos v1 on top of that same worker, and Atmos with a constant-rate schedule or with verified
+	reads. Each session runs headless Chromium in a Cloud Run job, so no tab is ever throttled in the
+	background.
 </p>
 
 {#if run.status === 'partial'}
 	<div class="callout"><p><strong>Partial results.</strong> {run.note} As of {run.asOf}.</p></div>
+{:else}
+	<p>{run.note} Measured {run.asOf}.</p>
 {/if}
 
 <h2>Results, {run.region}</h2>
@@ -57,13 +60,49 @@
 	first successful reply, boot included.
 </p>
 
-<BurstChart stairs={run.burstStairs} {labels} />
+<BurstChart stairs={run.burstStairs} {labels} cutoffMs={run.cutoffMs} />
+<p>
+	A call with no answer after {run.cutoffMs / 1000} s is cut off. The stock worker's median session
+	answered only its first two burst reads before that cut-off; the other eight are drawn at it.
+</p>
 <p>
 	The staircase is the cost of parallel calls through one stock worker. Its transport keeps a single
 	pooled connection per origin, so every extra concurrent call opens a fresh TCP and TLS connection
 	through the mixnet, one after another. Atmos sends the same ten reads as one JSON-RPC batch on a
 	connection that is already warm.
 </p>
+
+<h2>Three regions</h2>
+<p>
+	Medians per region: burst, steady p50, and share of calls answered. The verified-read arm comes
+	from a separate run with four sessions per arm; the constant-rate arm pays for its fixed slots
+	with a longer burst.
+</p>
+<table>
+	<thead>
+		<tr>
+			<th>Region</th>
+			<th class="num">Direct</th>
+			<th class="num">Stock anon-rpc</th>
+			<th class="num">Atmos v1</th>
+			<th class="num">Constant-rate</th>
+			<th class="num">Verified reads</th>
+		</tr>
+	</thead>
+	<tbody>
+		{#each regions as r (r.region)}
+			<tr>
+				<td>{r.region}</td>
+				{#each ['D', 'N0', 'N1', 'N2S', 'N2V'] as const as k (k)}
+					{@const c = r.cells[k]}
+					<td class="num"
+						>{#if c}{ms(c[0])}<br /><small>{ms(c[1])} · {c[2]}%</small>{:else}–{/if}</td
+					>
+				{/each}
+			</tr>
+		{/each}
+	</tbody>
+</table>
 
 <h2>The workload</h2>
 <p>One session takes about ten minutes, on one RPC provider chosen per session:</p>

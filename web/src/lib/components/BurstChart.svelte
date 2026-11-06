@@ -8,11 +8,15 @@
 <script lang="ts">
 	import type { Arm } from '#lib/data/bench.ts';
 
-	let { stairs, labels }: { stairs: Partial<Record<Arm, number[]>>; labels: Record<Arm, string> } =
+	let {
+		stairs,
+		labels,
+		cutoffMs = Infinity
+	}: { stairs: Partial<Record<Arm, number[]>>; labels: Record<Arm, string>; cutoffMs?: number } =
 		$props();
 
 	const order: Arm[] = ['D', 'N0', 'N1'];
-	const color: Record<Arm, string> = {
+	const color: Partial<Record<Arm, string>> = {
 		D: 'var(--series-d)',
 		N0: 'var(--series-n0)',
 		N1: 'var(--series-n1)'
@@ -40,7 +44,7 @@
 		tip = {
 			x: e.clientX - box.left,
 			y: e.clientY - box.top,
-			text: `${labels[arm]} · read ${i + 1} of ${rows} · done at ${fmt(ms)}`
+			text: `${labels[arm]} · read ${i + 1} of ${rows} · ${ms >= cutoffMs ? `no answer by ${fmt(cutoffMs)}` : `done at ${fmt(ms)}`}`
 		};
 	}
 </script>

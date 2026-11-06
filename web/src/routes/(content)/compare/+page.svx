@@ -62,8 +62,8 @@ The difference shows up once a wallet does what wallets do: open with a burst of
 ## What Atmos does not change
 
 - **The trust model.** You still trust the on-chain worker hash, and the bootstrap provider for one read.
-- **What the provider sees.** The provider still sees every call's content. Verified reads and provider splitting come in v2.
-- **Timing.** v1 does not shape traffic, so sessions can still be re-linked by their timing. That also comes in v2.
+- **What the provider sees.** The provider still sees every call's content. Provider splitting is planned, not built.
+- **Timing.** v1 does not shape traffic, so sessions can still be re-linked by their timing. The v2 constant-rate schedule addresses that, at a latency cost.
 - **Networks.** v1 runs on Nym only. The stock harness also runs Nox and Tor workers.
 
 ## Numbers

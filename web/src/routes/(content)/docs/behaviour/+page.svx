@@ -60,3 +60,5 @@ In v1, writes share the per-URL queue with reads, so a write issued alongside re
 - **Answers are not verified.** The provider and the exit are trusted for content, as with stock anon-rpc.
 - **Traffic is not shaped.** Timing can still re-link sessions.
 - **One network.** v1 runs on Nym only.
+
+Verified reads and the constant-rate schedule are separate v2 modules that wrap `request`. The [self-hosted endpoint](/docs/self-host/) uses the verified reads.

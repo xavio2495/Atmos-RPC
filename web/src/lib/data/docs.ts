@@ -4,5 +4,6 @@ export const docs = [
 	{ href: '/docs/client/', label: 'Client API' },
 	{ href: '/docs/wallets/', label: 'Wallet guide' },
 	{ href: '/docs/behaviour/', label: 'Routing & batching' },
+	{ href: '/docs/self-host/', label: 'Self-host' },
 	{ href: '/docs/troubleshooting/', label: 'Troubleshooting' }
 ];

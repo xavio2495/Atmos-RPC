@@ -38,11 +38,11 @@ v1 wraps the stock browser harness. It needs no change to any network's worker.
 4. **Batch, don't fan out.** Calls issued together to one provider go out as a single JSON-RPC batch, one request in flight per provider. Each provider's batch limit is respected.
 5. **Careful writes.** A transaction in flight is never sent twice, and is never raced or retried on another route.
 
-### v2: verified and shaped (planned)
+### v2: verified and shaped
 
-- **Proof-checked reads.** Each read becomes an `eth_getProof` at a block pinned by a light client, so a lying exit or provider can only cause a failure, never a wrong answer.
-- **Constant-rate traffic.** Padded batches leave on a fixed schedule with a random phase per session, and a fresh exit per session. In our model, that brings timing re-linkage down to chance.
-- **Provider splitting.** Each address is read from one provider, on its own session, so no single provider sees the whole set.
+- **Proof-checked reads (built).** A light client follows the sync committee's signatures to a trusted head. Balances, nonces, code and storage are checked with `eth_getProof` against that head's state root. `eth_call` runs locally on proven state, and receipts are checked against the block's receipts root. A lying exit or provider can cause a failure, never a wrong answer.
+- **Constant-rate traffic (built).** Padded batches leave on a fixed schedule with a random phase per session. In our model, that brings timing re-linkage down to chance.
+- **Provider splitting (not yet).** Each address read from one provider, on its own session, so no single provider sees the whole set.
 
 ### v3: the transport (planned)
 
