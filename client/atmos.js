@@ -157,7 +157,10 @@ export async function createAtmosClient({ bootstrapProvider, probeUrl, log = () 
         }
         log({ event: "route-rejected", attempt, reason: "probe" });
       } catch (e) {
-        log({ event: "route-rejected", attempt, reason: String(e?.message ?? e) });
+        const reason = String(e?.message ?? e);
+        log({ event: "route-rejected", attempt, reason });
+        // A boot that failed fast (e.g. every bundle mirror unreachable) is retried after a pause, not at once.
+        if (reason !== "boot timeout") { worker.close(); await sleep(2_000 * 2 ** attempt); continue; }
       }
       worker.close();
     }
@@ -172,10 +175,16 @@ export async function createAtmosClient({ bootstrapProvider, probeUrl, log = () 
     retiring.add(route);
     setTimeout(() => { retiring.delete(route); route.close(); }, RETIRE_GRACE_MS);
   };
+  // Origins the client has called. A standby connects to each before it can take over,
+  // so the first calls after a failover don't pay DNS, TCP and TLS through the mixnet.
+  const usedOrigins = new Set();
+  const warmUp = (route) => Promise.all([...usedOrigins].filter((o) => !route.warm.has(o)).map((o) =>
+    withTimeout(route.fetch(o + "/", { method: "HEAD" }), FIRST_CONTACT_TIMEOUT_MS, "warm-up")
+      .then(() => route.warm.add(o), () => {})));
   const ensureSecondary = () => {
     if (secondary || replacing) return;
     replacing = bootRoute()
-      .then((r) => { secondary = r; })
+      .then(async (r) => { await warmUp(r); secondary = r; })
       .catch(() => {})
       .finally(() => { replacing = null; });
   };
@@ -185,6 +194,7 @@ export async function createAtmosClient({ bootstrapProvider, probeUrl, log = () 
 
   async function request(url, body) {
     if (body.method === "eth_sendRawTransaction") {
+      usedOrigins.add(new URL(url).origin);
       const key = body.params?.[0];
       if (!inflightWrites.has(key)) {
         inflightWrites.set(key, primary.send(url, body).finally(() => inflightWrites.delete(key)));
@@ -197,6 +207,7 @@ export async function createAtmosClient({ bootstrapProvider, probeUrl, log = () 
   async function withFailover(url, attempt) {
     const route = primary;
     const origin = new URL(url).origin;
+    usedOrigins.add(origin);
     const pending = attempt(route);
     try {
       const timeout = route.warm.has(origin) ? ATTEMPT_TIMEOUT_MS : FIRST_CONTACT_TIMEOUT_MS;
