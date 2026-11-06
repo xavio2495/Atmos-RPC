@@ -193,7 +193,10 @@ function trieGet(root, key, proof) {
 // the head commits to the execution state root, and eth_getProof proves each value
 // under that root. `request(url, body)` is the JSON-RPC transport; `beaconGet(path)`
 // returns parsed JSON from a beacon API. Anything that can't be checked is rejected.
-export async function createVerifiedReader({ request, beaconGet, checkpoint, providers, chain = MAINNET, log = () => {} }) {
+// `split`: each address's proofs go to one provider chosen from the address's hash,
+// falling back to the others only on failure, so no single provider sees every
+// address the wallet reads.
+export async function createVerifiedReader({ request, beaconGet, checkpoint, providers, chain = MAINNET, split = false, log = () => {} }) {
   const boot = (await beaconGet(`/eth/v1/beacon/light_client/bootstrap/${checkpoint}`)).data;
   if (!boot) throw new Error("bootstrap not served for checkpoint");
   if (hex(beaconRoot(boot.header.beacon)) !== checkpoint.toLowerCase()) throw new Error("bootstrap does not match checkpoint");
@@ -260,9 +263,9 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
   ticker.unref?.();
 
   // One call, tried on each provider in turn; only this call moves on, not its batch.
-  async function onProviders(body, check) {
+  async function onProviders(body, check, order = providers) {
     let last;
-    for (const url of providers) {
+    for (const url of order) {
       try {
         const r = await request(url, body);
         if (r.error) throw new Error(r.error.message);
@@ -291,6 +294,8 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
     if (hit && slots.every((k) => k in hit.storage) && (!withCode || hit.code !== undefined)) return hit;
     const block = "0x" + head.number.toString(16);
     const proof = { jsonrpc: "2.0", id: 1, method: "eth_getProof", params: [address, slots, block] };
+    const first = split ? keccak_256(bytes(address))[0] % providers.length : 0;
+    const order = [...providers.slice(first), ...providers.slice(0, first)];
     const a = await onProviders(proof, (p) => {
       const value = trieGet(head.stateRoot, bytes(address), p.accountProof);
       const [nonce, balance, storageRoot, codeHash] = value ? rlpDecode(value) : [new Uint8Array(), new Uint8Array(), bytes(EMPTY_TRIE), bytes(EMPTY_CODE)];
@@ -302,12 +307,12 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
         storage[slot] = "0x" + hex(v ? rlpDecode(v) : new Uint8Array()).slice(2).padStart(64, "0");
       });
       return { exists: Boolean(value), nonce: quantity(nonce), balance: quantity(balance), storageRoot: hex(storageRoot), codeHash: hex(codeHash), storage };
-    });
+    }, order);
     if (withCode) {
       a.code = a.codeHash === EMPTY_CODE ? "0x" : await onProviders({ jsonrpc: "2.0", id: 2, method: "eth_getCode", params: [address, block] }, (c) => {
         if (hex(keccak_256(bytes(c))) !== a.codeHash) throw new Error("code does not match code hash");
         return c;
-      });
+      }, order);
     }
     if (hit && head.number === cacheBlock) {
       a.storage = { ...hit.storage, ...a.storage };
