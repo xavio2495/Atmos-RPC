@@ -201,7 +201,7 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
     throw new Error("bad bootstrap committee");
   }
   const committees = new Map([[period(boot.header.beacon.slot), boot.current_sync_committee]]);
-  let head = null, headAt = 0, refreshing = null;
+  let head = null, refreshing = null;
   const headers = new Map();
 
   // Move the committee forward one period at a time, each signed by the one before.
@@ -238,25 +238,26 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
       : { number: Number(h.execution.block_number), stateRoot: h.execution.state_root, hash: h.execution.block_hash };
     next.time = chain.genesisTime + Number(h.beacon.slot) * 12;
     if (!head || next.number > head.number) head = next;
-    headAt = Date.now();
   }
+  const refreshOnce = () => {
+    refreshing ??= refreshHead().finally(() => { refreshing = null; });
+    return refreshing;
+  };
+  // Reads use the last verified head without waiting. It is refreshed on a fixed
+  // clock rather than on demand, which keeps reads fast and makes the beacon
+  // traffic independent of when the user is active. A rejected update is logged
+  // and the last head kept; a read waits only once that head is too old to use.
   const currentHead = async () => {
-    if (!head || Date.now() - headAt > HEAD_REFRESH_MS) {
-      refreshing ??= refreshHead().finally(() => { refreshing = null; });
-      try {
-        await refreshing;
-      } catch (e) {
-        // A rejected update must not stop reads while the last verified head is
-        // still recent: keep it, and try a fresh update on the next read.
-        if (!head || Date.now() / 1000 - head.time > MAX_HEAD_AGE_S) throw e;
-        log({ event: "head-rejected", reason: String(e?.message ?? e).slice(0, 80) });
-      }
-    }
+    if (!head || Date.now() / 1000 - head.time > MAX_HEAD_AGE_S) await refreshOnce();
     return head;
   };
   // Open the connection to the first proof provider while the head is verified,
   // so the first reads don't pay for it.
   await Promise.all([currentHead(), request(providers[0], { jsonrpc: "2.0", id: 0, method: "eth_chainId", params: [] })]);
+  const ticker = setInterval(() => {
+    refreshOnce().catch((e) => log({ event: "head-rejected", reason: String(e?.message ?? e).slice(0, 80) }));
+  }, HEAD_REFRESH_MS);
+  ticker.unref?.();
 
   // One call, tried on each provider in turn; only this call moves on, not its batch.
   async function onProviders(body, check) {
@@ -276,8 +277,18 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
 
   // An account, chosen storage slots and (optionally) its code, each proven under
   // the state root of `head`. Slots are 32-byte hex keys; values come back as 32-byte hex.
+  // Proven accounts for the current head's block, reused by every call at that block.
+  let cacheBlock = -1;
+  const cache = new Map();
+
   async function account(address, slots, head, withCode) {
     address = address.toLowerCase();
+    if (cacheBlock !== head.number) {
+      cacheBlock = head.number;
+      cache.clear();
+    }
+    const hit = cache.get(address);
+    if (hit && slots.every((k) => k in hit.storage) && (!withCode || hit.code !== undefined)) return hit;
     const block = "0x" + head.number.toString(16);
     const proof = { jsonrpc: "2.0", id: 1, method: "eth_getProof", params: [address, slots, block] };
     const a = await onProviders(proof, (p) => {
@@ -298,6 +309,11 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
         return c;
       });
     }
+    if (hit && head.number === cacheBlock) {
+      a.storage = { ...hit.storage, ...a.storage };
+      a.code ??= hit.code;
+    }
+    if (head.number === cacheBlock) cache.set(address, a);
     return a;
   }
 
@@ -376,6 +392,7 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
   }
 
   return {
+    close: () => clearInterval(ticker),
     request: verifiedRequest,
     head: currentHead,
     header: headerByNumber,
