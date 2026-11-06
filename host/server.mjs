@@ -10,6 +10,16 @@ const CHECKPOINT = process.env.ATMOS_CHECKPOINT;
 const CHAIN_ID = "11155111";
 const MAX_BATCH = 20;
 const MAX_INFLIGHT_PER_IP = 20;
+// Room for a batch, or a raw transaction carrying blobs.
+const MAX_BODY_BYTES = 4 << 20;
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+// An open host serves anyone (ATMOS_PUBLIC=1). Otherwise it is the user's own: it answers
+// only to a loopback name, and to wallet extensions and clients without an Origin,
+// not to the websites the user visits.
+const LOCAL_ONLY = process.env.ATMOS_PUBLIC !== "1";
+const ORIGINS = new Set((process.env.ATMOS_ORIGINS ?? (LOCAL_ONLY ? "" : "*")).split(",").filter(Boolean));
+const EXTENSION = /^(chrome|moz|safari-web)-extension:\/\//;
+const originAllowed = (o) => !o || ORIGINS.has("*") || ORIGINS.has(o) || EXTENSION.test(o);
 // "node": the worker runs in the Node harness (a V8 isolate), no browser.
 // "chromium": it runs in the browser harness inside headless Chromium.
 const RUNTIME = process.env.ATMOS_RUNTIME ?? "node";
@@ -93,36 +103,57 @@ async function answer(call) {
   }
 }
 
-function send(res, status, body) {
+function send(res, status, body, origin) {
   res.writeHead(status, {
     "content-type": "application/json",
-    "access-control-allow-origin": "*",
-    "access-control-allow-headers": "content-type",
+    ...(origin && { "access-control-allow-origin": origin, "access-control-allow-headers": "content-type", vary: "origin" }),
   }).end(JSON.stringify(body));
+}
+
+// The body as text, or null once it passes the cap.
+async function readBody(req) {
+  const chunks = [];
+  let size = 0;
+  for await (const c of req) {
+    if ((size += c.length) > MAX_BODY_BYTES) return null;
+    chunks.push(c);
+  }
+  return Buffer.concat(chunks).toString();
 }
 
 // No request is logged with its address; only aggregate counts are kept.
 createServer(async (req, res) => {
   const path = new URL(req.url, "http://x").pathname.replace(/\/$/, "");
-  if (req.method === "OPTIONS") return send(res, 204, null);
+  // A local host only answers to its own name, so a rebound DNS name can't reach it.
+  const hostname = (req.headers.host ?? "").replace(/:\d+$/, "");
+  if (LOCAL_ONLY && !LOOPBACK.has(hostname)) return send(res, 403, rpcError(null, -32600, "host not allowed"));
+  const o = req.headers.origin;
+  if (!originAllowed(o)) return send(res, 403, rpcError(null, -32600, "origin not allowed"));
+  const cors = o && (ORIGINS.has("*") ? "*" : o);
+  const reply = (status, body) => send(res, status, body, cors);
+  if (req.method === "OPTIONS") return reply(204, null);
   if (req.method === "GET" && path === "") {
-    return send(res, 200, { name: "atmos-host", chains: [Number(CHAIN_ID)], runtime: RUNTIME, shaped: SHAPE, prefetch: PREFETCH, ...(await status()) });
+    return reply(200, { name: "atmos-host", chains: [Number(CHAIN_ID)], runtime: RUNTIME, shaped: SHAPE, prefetch: PREFETCH, ...(await status()) });
   }
-  if (req.method !== "POST" || path !== `/${CHAIN_ID}`) return send(res, 404, rpcError(null, -32601, "use POST /" + CHAIN_ID));
+  if (req.method !== "POST" || path !== `/${CHAIN_ID}`) return reply(404, rpcError(null, -32601, "use POST /" + CHAIN_ID));
 
   const ip = req.socket.remoteAddress;
   const count = inflight.get(ip) ?? 0;
-  if (count >= MAX_INFLIGHT_PER_IP) return send(res, 429, rpcError(null, -32005, "too many requests"));
+  if (count >= MAX_INFLIGHT_PER_IP) return reply(429, rpcError(null, -32005, "too many requests"));
   inflight.set(ip, count + 1);
   try {
-    const body = Buffer.concat(await Array.fromAsync(req)).toString();
-    let parsed;
-    try { parsed = JSON.parse(body); } catch { return send(res, 200, rpcError(null, -32700, "parse error")); }
-    if (Array.isArray(parsed)) {
-      if (parsed.length === 0 || parsed.length > MAX_BATCH) return send(res, 200, rpcError(null, -32600, `batch size 1..${MAX_BATCH}`));
-      return send(res, 200, await Promise.all(parsed.map(answer)));
+    const body = await readBody(req);
+    if (body === null) {
+      res.setHeader("connection", "close");
+      return reply(413, rpcError(null, -32600, `body over ${MAX_BODY_BYTES} bytes`));
     }
-    send(res, 200, await answer(parsed));
+    let parsed;
+    try { parsed = JSON.parse(body); } catch { return reply(200, rpcError(null, -32700, "parse error")); }
+    if (Array.isArray(parsed)) {
+      if (parsed.length === 0 || parsed.length > MAX_BATCH) return reply(200, rpcError(null, -32600, `batch size 1..${MAX_BATCH}`));
+      return reply(200, await Promise.all(parsed.map(answer)));
+    }
+    reply(200, await answer(parsed));
   } finally {
     const n = inflight.get(ip) - 1;
     n ? inflight.set(ip, n) : inflight.delete(ip);
