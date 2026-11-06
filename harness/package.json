@@ -1,0 +1,16 @@
+{
+  "name": "atmos-harness",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Fork of the anon-rpc node harness (ethereum/anon-rpc impl/node-harness), with its passthrough test worker.",
+  "workspaces": ["node-harness", "passthrough-worker"],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@noble/hashes": "^1.5.0",
+    "esbuild": "^0.28.0"
+  }
+}
