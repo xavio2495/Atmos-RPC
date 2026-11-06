@@ -2,6 +2,7 @@ import { createAtmosClient } from "../client/atmos.js";
 import { createVerifiedReader, SEPOLIA } from "../client/verify.js";
 import { createExecutor } from "../client/evm.js";
 import { createReceiptChecker } from "../client/receipts.js";
+import { createShaper } from "../client/shape.js";
 
 const BOOTSTRAP_RPC = "https://ethereum-rpc.publicnode.com";
 const BEACON = "https://lodestar-sepolia.chainsafe.io";
@@ -29,15 +30,19 @@ const latest = (tag) => tag === undefined || tag === "latest";
 
 // The host's RPC logic, the same under either runtime: in a browser page with the
 // browser harness, or in Node with the Node harness (`Worker`).
-export function startAtmos({ checkpoint, Worker, log = (e) => console.log(JSON.stringify(e)) }) {
+// `shape`: every call leaves in fixed-size batches on a fixed clock (constant-rate
+// schedule), so call timing and count stop showing activity. Costs latency.
+export function startAtmos({ checkpoint, Worker, shape = false, log = (e) => console.log(JSON.stringify(e)) }) {
   // "advisory": the call is proven not to revert, but the gas figure is the provider's.
   const counts = { verified: 0, advisory: 0, plain: 0, local: 0, failed: 0 };
-  let reader, client, executor, receipts;
+  let reader, client, executor, receipts, transport;
 
   const ready = (async () => {
     client = await createAtmosClient({ bootstrapProvider, probeUrl: PROVIDERS[0], log, ...(Worker ? { Worker } : {}) });
+    const send = shape ? createShaper({ request: client.request }).request : client.request;
+    transport = send;
     reader = await createVerifiedReader({
-      request: client.request,
+      request: send,
       beaconGet: (path) => client.fetch(BEACON + path).then((r) => r.json()),
       checkpoint,
       providers: PROVIDERS,
@@ -93,7 +98,7 @@ export function startAtmos({ checkpoint, Worker, log = (e) => console.log(JSON.s
     } catch (e) {
       if (!String(e?.message).startsWith("not verifiable")) throw e;
       counts.plain++;
-      return client.request(PROVIDERS[0], body);
+      return transport(PROVIDERS[0], body);
     }
   }
 

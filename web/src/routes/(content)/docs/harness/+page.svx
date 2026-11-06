@@ -29,11 +29,13 @@ The guest still starts with nothing: no `process`, no `require`, no module loade
 ## How it is tested
 
 - **Upstream's own suite** passes unchanged on the V8 sandbox. It checks the realm escape, the missing ambient platform, the address policy, and hostile workers: an infinite loop, deep recursion and heap exhaustion. All three are contained, and the host survives.
-- **A live Nym boot** loads the hash-pinned worker, initialises its WebAssembly client, opens the WebSocket to an entry gateway and registers there.
+- **A live Nym boot** (`test/nym.mjs`) loads the hash-pinned worker, connects through the mixnet and answers JSON-RPC calls.
 
-## What is not yet shown
+## Nym on the Node harness
 
-A full Nym boot through the Node harness, ready and answering a call, has not been seen yet. During testing, exit-router handshakes timed out after 12 seconds. At the same time, the same worker failed to boot in headless Chromium through the browser harness too, so the network was failing for both. Until a full boot is seen, the [self-hosted endpoint](/docs/self-host/) keeps Chromium as its default.
+The live, hash-pinned Nym worker boots in the forked harness with no browser. In one run it connected to an exit router in 1.3 seconds, was ready at 18.9 seconds, and answered `eth_blockNumber` through the mixnet in about 0.6 seconds. The [self-hosted endpoint](/docs/self-host/) runs on it by default: a 5-minute wallet-style session answered all 73 calls, 69 of them proof-checked.
+
+Getting there took one fix that matters to anyone porting a browser worker. The Nym client sends its binary frames as `Blob` objects, so a WebSocket grant must send a Blob's bytes, not read it like a typed array.
 
 ## Use it
 

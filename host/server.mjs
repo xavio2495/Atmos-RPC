@@ -11,7 +11,9 @@ const MAX_BATCH = 20;
 const MAX_INFLIGHT_PER_IP = 20;
 // "node": the worker runs in the Node harness (a V8 isolate), no browser.
 // "chromium": it runs in the browser harness inside headless Chromium.
-const RUNTIME = process.env.ATMOS_RUNTIME ?? "chromium";
+const RUNTIME = process.env.ATMOS_RUNTIME ?? "node";
+// Constant-rate schedule for all outgoing calls (see core.js). Off by default.
+const SHAPE = process.env.ATMOS_SHAPE === "1";
 
 if (!/^0x[0-9a-fA-F]{64}$/.test(CHECKPOINT ?? "")) {
   console.error("ATMOS_CHECKPOINT must be a trusted Sepolia beacon block root (0x + 64 hex)");
@@ -36,7 +38,7 @@ async function startNode() {
       });
     }
   }
-  const atmos = startAtmos({ checkpoint: CHECKPOINT, Worker: NymWorker });
+  const atmos = startAtmos({ checkpoint: CHECKPOINT, Worker: NymWorker, shape: SHAPE });
   return { handle: atmos.handle, status: atmos.status };
 }
 
@@ -57,7 +59,7 @@ async function startChromium() {
   const browser = await chromium.launch();
   const page = await browser.newPage();
   page.on("console", (m) => console.log(m.text()));
-  await page.addInitScript((cp) => { window.ATMOS_CHECKPOINT = cp; }, CHECKPOINT);
+  await page.addInitScript(([cp, shape]) => { window.ATMOS_CHECKPOINT = cp; window.ATMOS_SHAPE = shape; }, [CHECKPOINT, SHAPE]);
   await page.goto(`http://127.0.0.1:${pageServer.address().port}/`);
   await page.waitForFunction(() => typeof window.atmosHandle === "function");
   return {
@@ -91,7 +93,7 @@ createServer(async (req, res) => {
   const path = new URL(req.url, "http://x").pathname.replace(/\/$/, "");
   if (req.method === "OPTIONS") return send(res, 204, null);
   if (req.method === "GET" && path === "") {
-    return send(res, 200, { name: "atmos-host", chains: [Number(CHAIN_ID)], runtime: RUNTIME, ...(await status()) });
+    return send(res, 200, { name: "atmos-host", chains: [Number(CHAIN_ID)], runtime: RUNTIME, shaped: SHAPE, ...(await status()) });
   }
   if (req.method !== "POST" || path !== `/${CHAIN_ID}`) return send(res, 404, rpcError(null, -32601, "use POST /" + CHAIN_ID));
 
