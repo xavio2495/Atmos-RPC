@@ -1,0 +1,16 @@
+{
+  "name": "atmos-bench",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "NODE_PATH=node_modules esbuild page/session.js --bundle --format=esm --target=es2022 --outfile=page/dist/session.js",
+    "start": "node run.mjs"
+  },
+  "dependencies": {
+    "@anon-rpc/browser-harness": "0.4.0",
+    "@noble/curves": "1.9.7",
+    "@noble/hashes": "1.8.0",
+    "esbuild": "0.25.12",
+    "playwright": "1.65.0"
+  }
+}

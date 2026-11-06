@@ -1,0 +1,95 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+**/node_modules
+/.pnp
+.pnp.js
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env files
+.env*.local
+.env
+
+# vercel
+.vercel
+package-lock.json
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# Remix compiler artifacts
+**/artifacts/
+**/artifacts/**
+
+# Remix plugin state folders
+deps/
+states/
+
+# Debug info
+*.dbg.json
+*.tsbuildinfo
+
+# Optional
+.env
+.env.local
+
+# Foundry
+/contracts/out/
+/contracts/cache/
+/contracts/broadcast/*/31337/
+/contracts/broadcast/*/*/dry-run/
+
+# Python
+__pycache__/
+*.pyc
+
+# Subgraph build artifacts (graph codegen / graph build)
+/subgraphs/*/generated/
+/subgraphs/*/build/
+
+# Doc files are not committed except README.md
+*.md
+!/README.md
+
+# Local Claude Code session config/state, not project source
+.claude/
+# Compiled TUI binary
+/apps/tui/zentis
+
+# Built TUI bundle for the npm bin
+/apps/tui/dist/
+
+# Partial output left by an interrupted bun build --compile
+*.bun-build
+
+# Cloned third-party reference sites (design study only, not project source)
+/reference/
+
+# The agents' working notes and design studies: never published, whatever their extension.
+/claude-docs/
+
+# Build output of the bench page bundle
+bench/page/dist/
+
+# Editor settings
+.vscode/
