@@ -20,7 +20,7 @@
     "@anon-rpc/harness-core": "0.4.0",
     "@jitl/quickjs-singlefile-mjs-release-sync": "^0.32.0",
     "@noble/hashes": "^1.5.0",
-    "isolated-vm": "^7.0.2",
+    "isolated-vm": "7.0.2",
     "quickjs-emscripten-core": "^0.32.0"
   },
   "devDependencies": {

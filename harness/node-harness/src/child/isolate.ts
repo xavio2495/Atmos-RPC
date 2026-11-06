@@ -80,6 +80,14 @@ export type IsolateCapabilities = {
    * worker) run unchanged while the host still sees every request.
    */
   fetch: boolean;
+  /** A bridged WebSocket, under the same address policy. */
+  webSocket?: boolean;
+  /**
+   * Browser-platform pieces that carry no authority: atob/btoa, Blob and
+   * object URLs, an in-isolate Worker and MessageChannel, navigator, and the
+   * promise forms of WebAssembly. Needed by workers built for a browser.
+   */
+  web?: boolean;
 };
 
 export type IsolateOptions = {

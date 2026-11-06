@@ -916,7 +916,11 @@
   function makeFetch() {
     return async function fetch(input, init) {
       const url = typeof input === "string" ? input : String(input && input.url ? input.url : input);
-      const i = init || {};
+      // A Request carries its own method, headers, body and signal; init overrides them.
+      const fromRequest = input && typeof input === "object" && input.__isRequest
+        ? { method: input.method, headers: input.headers, body: input.__body, signal: input.signal, redirect: input.redirect }
+        : {};
+      const i = Object.assign(fromRequest, init || {});
       const headers =
         i.headers instanceof Headers
           ? i.headers.toList()
@@ -1051,6 +1055,287 @@
 
   if (capabilities.socket) anonRpcWorker.socket = makeSocket();
 
+  /* --- browser platform pieces (capabilities.web, capabilities.webSocket) -- */
+
+  // A minimal EventTarget: listeners plus `on<type>` handler properties, which
+  // is the surface WebSocket, MessagePort and Worker code actually uses.
+  class EventTarget_ {
+    constructor() {
+      Object.defineProperty(this, "_listeners", { value: new Map() });
+    }
+    addEventListener(type, fn, options) {
+      if (typeof fn !== "function" && !(fn && typeof fn.handleEvent === "function")) return;
+      if (!this._listeners.has(type)) this._listeners.set(type, []);
+      const list = this._listeners.get(type);
+      if (list.includes(fn)) return;
+      const once = typeof options === "object" && options !== null && Boolean(options.once);
+      if (once) Object.defineProperty(this, "_once", { value: this._once || new Set(), configurable: true }), this._once.add(fn);
+      const signal = typeof options === "object" && options !== null ? options.signal : undefined;
+      if (signal && typeof signal.addEventListener === "function") signal.addEventListener("abort", () => this.removeEventListener(type, fn));
+      list.push(fn);
+      if (type === "message" && typeof this.start === "function") this.start();
+    }
+    removeEventListener(type, fn) {
+      const l = this._listeners.get(type);
+      if (l) this._listeners.set(type, l.filter((x) => x !== fn));
+    }
+    dispatchEvent(ev) {
+      ev.target = ev.currentTarget = this;
+      const h = this["on" + ev.type];
+      if (typeof h === "function") h.call(this, ev);
+      // A listener removed during dispatch is not called, as on the platform:
+      // wasm-bindgen frees a closure when it removes it.
+      for (const fn of (this._listeners.get(ev.type) || []).slice()) {
+        if (!(this._listeners.get(ev.type) || []).includes(fn)) continue;
+        if (this._once && this._once.delete(fn)) this.removeEventListener(ev.type, fn);
+        typeof fn === "function" ? fn.call(this, ev) : fn.handleEvent(ev);
+      }
+      return true;
+    }
+  }
+
+  const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const B64_INDEX = new Int16Array(256).fill(-1);
+  for (let i = 0; i < 64; i++) B64_INDEX[B64.charCodeAt(i)] = i;
+
+  // Decodes in slices so a 10 MB payload is not one giant argument list.
+  function atob_(input) {
+    const s = String(input).replace(/[\t\n\f\r ]/g, "");
+    if (s.length % 4 === 1 || /[^A-Za-z0-9+/=]/.test(s)) throw codedError("InvalidCharacterError", "atob: invalid base64");
+    const bytes = new Uint8Array(Math.floor((s.replace(/=+$/, "").length * 3) / 4));
+    let o = 0;
+    for (let i = 0; i < s.length; i += 4) {
+      const a = B64_INDEX[s.charCodeAt(i)], b = B64_INDEX[s.charCodeAt(i + 1)];
+      const c = B64_INDEX[s.charCodeAt(i + 2)], d = B64_INDEX[s.charCodeAt(i + 3)];
+      bytes[o++] = (a << 2) | (b >> 4);
+      if (c >= 0 && o < bytes.length) bytes[o++] = ((b & 15) << 4) | (c >> 2);
+      if (d >= 0 && o < bytes.length) bytes[o++] = ((c & 3) << 6) | d;
+    }
+    let out = "";
+    for (let i = 0; i < bytes.length; i += 32768) out += String.fromCharCode.apply(null, bytes.subarray(i, i + 32768));
+    return out;
+  }
+
+  function btoa_(input) {
+    const s = String(input);
+    let out = "";
+    for (let i = 0; i < s.length; i += 3) {
+      const a = s.charCodeAt(i), b = s.charCodeAt(i + 1), c = s.charCodeAt(i + 2);
+      if (a > 255 || b > 255 || c > 255) throw codedError("InvalidCharacterError", "btoa: character out of range");
+      out += B64[a >> 2] + B64[((a & 3) << 4) | ((b || 0) >> 4)];
+      out += i + 1 < s.length ? B64[((b & 15) << 2) | ((c || 0) >> 6)] : "=";
+      out += i + 2 < s.length ? B64[c & 63] : "=";
+    }
+    return out;
+  }
+
+  // Blobs hold their parts as bytes; object URLs map to them in memory only.
+  class Blob {
+    constructor(parts, options) {
+      const chunks = (parts || []).map((p) =>
+        p instanceof Blob ? p._bytes
+        : typeof p === "string" ? new TextEncoder().encode(p)
+        : p instanceof ArrayBuffer ? new Uint8Array(p)
+        : new Uint8Array(p.buffer, p.byteOffset, p.byteLength));
+      const bytes = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
+      let o = 0;
+      for (const c of chunks) { bytes.set(c, o); o += c.byteLength; }
+      Object.defineProperty(this, "_bytes", { value: bytes });
+      this.type = (options && options.type) || "";
+    }
+    get size() { return this._bytes.byteLength; }
+    async arrayBuffer() { return this._bytes.slice().buffer; }
+    async text() { return new TextDecoder().decode(this._bytes); }
+  }
+  const objectUrls = new Map();
+  let nextObjectUrl = 1;
+  URL.createObjectURL = (blob) => {
+    const u = "blob:anon-rpc/" + nextObjectUrl++;
+    objectUrls.set(u, blob);
+    return u;
+  };
+  URL.revokeObjectURL = (u) => void objectUrls.delete(String(u));
+
+  // Messages are delivered as tasks, after the sender's current turn, the way
+  // the platform does. Ports and workers here share one realm, so a message is
+  // handed over by reference; both ends are the same hash-pinned bundle.
+  const deliver = (target, data) => setTimeout_(() => target.dispatchEvent({ type: "message", data, ports: [] }), 0);
+
+  class MessagePort extends EventTarget_ {
+    postMessage(data) {
+      if (this._other && !this._closed) deliver(this._other, data);
+    }
+    start() {}
+    close() { this._closed = true; }
+  }
+  class MessageChannel {
+    constructor() {
+      this.port1 = new MessagePort();
+      this.port2 = new MessagePort();
+      this.port1._other = this.port2;
+      this.port2._other = this.port1;
+    }
+  }
+
+  // A Worker runs its script in this same isolate under its own `self`, whose
+  // prototype is the global object, so the script sees the whole platform.
+  function WorkerGlobalScope() {}
+  class Worker extends EventTarget_ {
+    constructor(url) {
+      super();
+      const blob = objectUrls.get(String(url));
+      if (!blob) throw codedError("SecurityError", "Worker: only object URLs from this isolate can be loaded");
+      const inner = new EventTarget_();
+      const scope = Object.create(globalThis);
+      Object.assign(scope, {
+        self: scope,
+        globalThis: scope,
+        WorkerGlobalScope,
+        postMessage: (data) => deliver(this, data),
+        addEventListener: inner.addEventListener.bind(inner),
+        removeEventListener: inner.removeEventListener.bind(inner),
+        close: () => {},
+      });
+      Object.defineProperty(scope, "onmessage", { get: () => inner.onmessage, set: (fn) => { inner.onmessage = fn; } });
+      this._inner = inner;
+      blob.text().then((source) => {
+        try {
+          // A worker script's global object is its scope, for `self`, `globalThis`
+          // and bare names alike, so the script runs inside `with (scope)`.
+          new Function("scope", "with (scope) {\n" + source + "\n}").call(scope, scope);
+        } catch (e) {
+          // Otherwise silent: the worker's owner only sees a missing reply.
+          consoleObj.error("worker script threw:", String((e && e.stack) || e).slice(0, 1500));
+          this.dispatchEvent({ type: "error", message: String((e && e.message) || e), error: e });
+        }
+      });
+    }
+    postMessage(data) { deliver(this._inner, data); }
+    terminate() { this._inner = new EventTarget_(); }
+  }
+
+  class DOMException extends Error {
+    constructor(message, name) {
+      super(message === undefined ? "" : String(message));
+      this.name = name === undefined ? "Error" : String(name);
+    }
+  }
+
+  class Event {
+    constructor(type, init) {
+      this.type = String(type);
+      Object.assign(this, init || {});
+    }
+  }
+  class CloseEvent extends Event {
+    constructor(type, init) {
+      super(type);
+      this.code = (init && init.code) || 0;
+      this.reason = (init && init.reason) || "";
+      this.wasClean = Boolean(init && init.wasClean);
+    }
+  }
+  class MessageEvent extends Event {}
+
+  class Request {
+    constructor(input, init) {
+      const i = init || {};
+      this.url = typeof input === "string" ? input : String(input.url);
+      this.method = String(i.method || (input && input.method) || "GET").toUpperCase();
+      this.headers = new Headers(i.headers || (input && input.headers) || []);
+      this.signal = i.signal || null;
+      this.redirect = i.redirect || "follow";
+      this.mode = i.mode || "cors";
+      this.credentials = i.credentials || "same-origin";
+      this.cache = i.cache || "default";
+      Object.defineProperty(this, "__body", { value: i.body === undefined ? (input && input.__body) : i.body });
+      Object.defineProperty(this, "__isRequest", { value: true });
+    }
+  }
+
+  // Monotonic enough for timing: anchored to the wall clock at isolate start.
+  const timeOrigin = Date.now();
+  const performance_ = { timeOrigin, now: () => Date.now() - timeOrigin };
+
+  // isolated-vm has no task runner for V8's async WebAssembly compile, so the
+  // promise forms are built on the synchronous ones.
+  function promiseWasm() {
+    const W = globalThis.WebAssembly;
+    if (!W) return;
+    const toBytes = async (src) => (src && typeof src.arrayBuffer === "function" ? new Uint8Array(await src.arrayBuffer()) : src);
+    W.compile = async (bytes) => new W.Module(bytes);
+    W.instantiate = async (src, imports) => {
+      if (src instanceof W.Module) return new W.Instance(src, imports);
+      const module = new W.Module(src);
+      return { module, instance: new W.Instance(module, imports) };
+    };
+    W.compileStreaming = async (res) => W.compile(await toBytes(await res));
+    W.instantiateStreaming = async (res, imports) => W.instantiate(await toBytes(await res), imports);
+  }
+
+  function makeWebSocket() {
+    class WebSocket extends EventTarget_ {
+      constructor(url, protocols) {
+        super();
+        this.url = String(url);
+        this.readyState = 0;
+        this.binaryType = "blob";
+        this.protocol = "";
+        this.extensions = "";
+        this.bufferedAmount = 0;
+        const list = protocols === undefined ? [] : [].concat(protocols).map(String);
+        ask("ws.connect", { url: this.url, protocols: list }).then(
+          ({ value }) => {
+            this._id = value.id;
+            this.protocol = value.protocol || "";
+            this.extensions = value.extensions || "";
+            if (this.readyState !== 0) return post("ws.close", { id: this._id });
+            this.readyState = 1;
+            this.dispatchEvent({ type: "open" });
+            this._pump();
+          },
+          (e) => this._closed(1006, String((e && e.message) || e), false, true),
+        );
+      }
+      async _pump() {
+        while (this.readyState === 1 || this.readyState === 2) {
+          let r;
+          try {
+            r = await ask("ws.recv", { id: this._id });
+          } catch (e) {
+            return this._closed(1006, String((e && e.message) || e), false, true);
+          }
+          const v = r.value;
+          if (v.type === "close") return this._closed(v.code, v.reason, v.wasClean, false);
+          if (v.type === "error") { this.dispatchEvent({ type: "error" }); continue; }
+          const data = !v.binary ? v.text : this.binaryType === "arraybuffer" ? r.bytes.slice().buffer : new Blob([r.bytes]);
+          this.dispatchEvent({ type: "message", data });
+        }
+      }
+      _closed(code, reason, wasClean, withError) {
+        if (this.readyState === 3) return;
+        this.readyState = 3;
+        if (withError) this.dispatchEvent({ type: "error", message: reason });
+        this.dispatchEvent({ type: "close", code, reason, wasClean });
+      }
+      send(data) {
+        if (this.readyState !== 1) throw codedError("InvalidStateError", "WebSocket is not open");
+        if (typeof data === "string") return post("ws.send", { id: this._id, text: data });
+        const u = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+        post("ws.send", { id: this._id }, u.slice().buffer);
+      }
+      close(code, reason) {
+        if (this.readyState >= 2) return;
+        const wasConnecting = this.readyState === 0;
+        this.readyState = 2;
+        if (!wasConnecting) post("ws.close", { id: this._id, code, reason });
+      }
+    }
+    Object.assign(WebSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
+    Object.assign(WebSocket.prototype, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
+    return WebSocket;
+  }
+
   /* --- install ------------------------------------------------------------ */
 
   def("TextEncoder", TextEncoder);
@@ -1073,6 +1358,24 @@
   def("structuredClone", (v) => deepClone(v, new Map()));
   if (capabilities.fetch) def("fetch", makeFetch());
   def("anonRpcWorker", anonRpcWorker);
+  if (capabilities.web) {
+    promiseWasm();
+    def("atob", atob_);
+    def("btoa", btoa_);
+    def("Blob", Blob);
+    def("EventTarget", EventTarget_);
+    def("MessageChannel", MessageChannel);
+    def("MessagePort", MessagePort);
+    def("Worker", Worker);
+    def("navigator", { userAgent: "anon-rpc-node-harness", hardwareConcurrency: 1, language: "en" });
+    def("DOMException", DOMException);
+    def("Event", Event);
+    def("CloseEvent", CloseEvent);
+    def("MessageEvent", MessageEvent);
+    def("Request", Request);
+    def("performance", performance_);
+  }
+  if (capabilities.webSocket) def("WebSocket", makeWebSocket());
 
   function deepClone(v, seen) {
     if (v === null || typeof v !== "object") return v;

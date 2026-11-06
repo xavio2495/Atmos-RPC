@@ -13,9 +13,13 @@
 // has no network, no filesystem and no syscalls — so every capability is
 // something this file decides to install. `fetch` included.
 
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { keccak_256 } from "@noble/hashes/sha3";
 import { spawnIsolate, type IsolateLimits, type SpawnedIsolate } from "./isolation.js";
 import { installSocketBridge } from "./socket-bridge-host.js";
 import { installFetchBridge } from "./fetch-bridge-host.js";
+import { installWebSocketBridge } from "./websocket-bridge-host.js";
 import type { AddressPolicy } from "./address-policy.js";
 import { Rpc, RpcError, abortError, type PortLike } from "../protocol.js";
 import type { GuestPayload, GuestReply } from "../child/isolate-thread.js";
@@ -78,6 +82,10 @@ export type NodeWorkerInit = WorkerInit & {
      * without KPS gateways.
      */
     socket?: boolean;
+    /** A bridged WebSocket under the address policy. Off by default. */
+    webSocket?: boolean;
+    /** Authority-free browser platform pieces (see isolate.ts). Off by default. */
+    web?: boolean;
   };
 
   /** Shared by both network capabilities. */
@@ -96,7 +104,31 @@ export type NodeWorkerInit = WorkerInit & {
 
   /** Guest heap cap and execution deadline. See isolate.ts. */
   limits?: IsolateLimits;
+
+  /**
+   * A directory for verified bundles, named by their hash. A cached bundle is
+   * used only if it still hashes to the specifier's `workerHash`, so the cache
+   * saves the download (and its exposure to the resolvers) without being
+   * trusted.
+   */
+  bundleCacheDir?: string;
 };
+
+async function loadBundle(spec: Awaited<ReturnType<typeof readSpecifier>>, cacheDir?: string): Promise<Uint8Array> {
+  if (!cacheDir) return fetchAndVerifyBundle(spec);
+  const file = join(cacheDir, `${spec.workerHash.slice(2)}.js`);
+  try {
+    const cached = new Uint8Array(await readFile(file));
+    const got = "0x" + Buffer.from(keccak_256(cached)).toString("hex");
+    if (got === spec.workerHash) return cached;
+  } catch {
+    /* not cached yet */
+  }
+  const bytes = await fetchAndVerifyBundle(spec);
+  await mkdir(cacheDir, { recursive: true });
+  await writeFile(file, bytes).catch(() => {});
+  return bytes;
+}
 
 /**
  * A queued inbound fetch call, waiting for the worker to accept it.
@@ -161,11 +193,13 @@ export class AnonRpcWorker {
     // whose keccak256 matches. This happens on the HOST, before the isolate
     // exists — the bytes are verified before anything is asked to run them.
     const spec = await readSpecifier(provider, init.address);
-    const bundle = await fetchAndVerifyBundle(spec);
+    const bundle = await loadBundle(spec, init.bundleCacheDir);
 
     const capabilities = {
       fetch: init.capabilities?.fetch ?? true,
       socket: init.capabilities?.socket ?? false,
+      webSocket: init.capabilities?.webSocket ?? false,
+      web: init.capabilities?.web ?? false,
     };
 
     const isolate = spawnIsolate();
@@ -199,6 +233,10 @@ export class AnonRpcWorker {
           maxConcurrent: init.network?.maxConcurrent,
         }),
       );
+    }
+
+    if (capabilities.webSocket) {
+      this.#disposers.push(installWebSocketBridge(rpc, { policy: init.network?.policy }));
     }
 
     rpc.emit("init", {

@@ -45,6 +45,8 @@ const FORWARDED_EVENTS = new Set([
   "call.fail",
   "socket.end",
   "socket.close",
+  "ws.send",
+  "ws.close",
 ]);
 
 /** Guest requests the host answers. */
@@ -55,6 +57,8 @@ const FORWARDED_REQUESTS = new Set([
   "socket.read",
   "socket.write",
   "socket.closed",
+  "ws.connect",
+  "ws.recv",
 ]);
 
 let isolate: Isolate | undefined;
