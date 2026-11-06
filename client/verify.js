@@ -255,9 +255,10 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
     // From Gloas the signed head names only a block hash; its header is fetched and must hash to it.
     const next = gloas
       ? await onProviders({ jsonrpc: "2.0", id: 3, method: "eth_getBlockByHash", params: [h.execution_block_hash, false] }, (b) => {
-          if (!b || headerHash(b) !== h.execution_block_hash.toLowerCase()) throw new Error("header does not match block hash");
-          headers.set(b.hash, b);
-          return { number: Number(b.number), stateRoot: b.stateRoot, hash: b.hash };
+          const hash = h.execution_block_hash.toLowerCase();
+          if (!b || headerHash(b) !== hash) throw new Error("header does not match block hash");
+          headers.set(hash, { ...b, hash });
+          return { number: Number(b.number), stateRoot: b.stateRoot, hash };
         })
       : { number: Number(h.execution.block_number), stateRoot: h.execution.state_root, hash: h.execution.block_hash };
     next.time = chain.genesisTime + Number(h.beacon.slot) * 12;
@@ -369,7 +370,8 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
     if (!headers.has(hash)) {
       await onProviders({ jsonrpc: "2.0", id: 4, method: "eth_getBlockByHash", params: [hash, false] }, (b) => {
         if (!b || headerHash(b) !== hash) throw new Error("header does not match block hash");
-        headers.set(hash, b);
+        // The provider's own `hash` field is not part of what was hashed.
+        headers.set(hash, { ...b, hash });
         if (headers.size > 4 * MAX_HEADER_WALK) headers.delete(headers.keys().next().value);
       });
     }

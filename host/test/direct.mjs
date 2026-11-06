@@ -77,6 +77,19 @@ const forged = await createVerifiedReader({
 }).then(() => "accepted", (e) => e.message);
 check(forged !== "accepted", `a forged header is rejected (${forged})`);
 
+// A provider that relabels a real header's `hash` field can't make it pass as another block.
+{
+  const FAKE = "0x" + "ab".repeat(32);
+  const relabel = await createVerifiedReader({
+    request: async (u, b) => { const r = await post(u, b); if (b.method === "eth_getBlockByHash" && r.result) r.result.hash = FAKE; return r; },
+    beaconGet: get, checkpoint, providers: [U], chain: SEPOLIA,
+  });
+  const latest = await relabel.request(U, { jsonrpc: "2.0", id: 1, method: "eth_getBlockByNumber", params: ["latest", false] });
+  const asFake = await relabel.block(FAKE).then(() => "accepted", (e) => e.message);
+  check(latest.result?.hash !== FAKE && asFake !== "accepted", `a relabelled header hash is not trusted (${asFake})`);
+  relabel.close();
+}
+
 const lying = await createVerifiedReader({
   request: async (u, b) => { const r = await post(u, b); if (b.method === "eth_getCode") r.result = r.result.slice(0, -2) + "00"; return r; },
   beaconGet: get, checkpoint, providers: [U], chain: SEPOLIA,

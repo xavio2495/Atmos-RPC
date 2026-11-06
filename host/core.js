@@ -64,6 +64,7 @@ const replyTo = (body, result) => ({ jsonrpc: "2.0", id: body.id, result });
 
 const SHAPED_INTERVALS = { read: 4_000, proof: 8_000 };
 const ANY = "0x0000000000000000000000000000000000000000";
+const BLOCK_METHODS = new Set(["eth_getBlockByNumber", "eth_getBlockByHash"]);
 const SHAPED_SEED = [
   { method: "eth_getBalance", params: [ANY, "latest"] },
   { method: "eth_getTransactionCount", params: [ANY, "latest"] },
@@ -82,7 +83,8 @@ const SHAPED_SEED = [
 // verified block, and answer a repeat from that block's result. Never answers
 // with anything older than the current verified head. Off by default.
 export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false, trace, log = (e) => console.log(JSON.stringify(e)) }) {
-  // "advisory": the call is proven not to revert, but the gas figure is the provider's.
+  // "advisory": proven in part. An estimate proven not to revert with the provider's
+  // gas figure, or a block whose header is proven but whose transaction list is not.
   const counts = { verified: 0, advisory: 0, plain: 0, local: 0, failed: 0, prefetched: 0 };
   let reader, client, executor, receipts, transport;
 
@@ -159,7 +161,8 @@ export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false
     }
     try {
       const r = await reader.request(PROVIDERS[0], body);
-      counts[r.error ? "failed" : "verified"]++;
+      // A block's header fields are proven; its transaction list is the provider's.
+      counts[r.error ? "failed" : BLOCK_METHODS.has(body.method) ? "advisory" : "verified"]++;
       return r;
     } catch (e) {
       if (!String(e?.message).startsWith("not verifiable")) throw e;
