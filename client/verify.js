@@ -371,6 +371,7 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
     request: verifiedRequest,
     head: currentHead,
     header: headerByNumber,
+    block: findHeader,
     account,
     // An unverified answer, for hints such as access lists that are checked later.
     hint: (body) => onProviders(body, (r) => r),

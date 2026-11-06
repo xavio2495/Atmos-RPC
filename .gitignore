@@ -90,6 +90,7 @@ __pycache__/
 
 # Build output of the bench page bundle
 bench/page/dist/
+host/page/dist/
 
 # Editor settings
 .vscode/
