@@ -46,7 +46,9 @@ async function startNode() {
       super({
         ...init,
         capabilities: { fetch: true, webSocket: true, web: true },
-        limits: { memoryBytes: 1024 * 1024 * 1024, deadlineMs: 60_000 },
+        // One synchronous entry into the worker takes at most ~1.4 s (its first
+        // evaluation, which loads the wasm); 10 s leaves room for a slower CPU.
+        limits: { memoryBytes: 1024 * 1024 * 1024, deadlineMs: 10_000 },
         bundleCacheDir: process.env.ATMOS_BUNDLE_CACHE ?? join(here, ".bundles"),
       });
     }
