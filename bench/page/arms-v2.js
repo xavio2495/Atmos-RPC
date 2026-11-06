@@ -7,11 +7,11 @@ const BEACON = "https://ethereum-beacon-api.publicnode.com";
 const CHECKPOINT = "0x4f9c06cba2f0413722b917774787fd05a0fd28bfaec7d5a9d209b10028021092";
 const PROOF_PROVIDERS = ["https://rpc.mevblocker.io", "https://ethereum-rpc.publicnode.com", "https://eth.drpc.org"];
 
-async function bootAtmos(opts, t0, out, bootstrapProvider) {
+async function bootAtmos(opts, t0, out, bootstrapProvider, clientOpts = {}) {
   out.events = [];
   const log = (e) => out.events.push({ at: Math.round(performance.now() - t0), ...e });
   try {
-    const client = await createAtmosClient({ bootstrapProvider: bootstrapProvider(), probeUrl: opts.url, log });
+    const client = await createAtmosClient({ bootstrapProvider: bootstrapProvider(), probeUrl: opts.url, log, ...clientOpts });
     return { client, log };
   } catch (e) {
     out.boot.error = String(e?.message ?? e).slice(0, 80);
@@ -22,8 +22,9 @@ async function bootAtmos(opts, t0, out, bootstrapProvider) {
 // Arms for v2, given the shared session helpers.
 export const v2Arms = ({ workload, bootstrapProvider }) => ({
   // v1 plus proof-checked reads; calls that can't be checked go plain and are counted.
-  async N2V(opts, t0, out) {
-    const { client, log } = await bootAtmos(opts, t0, out, bootstrapProvider);
+  // `clientOpts` lets a variant reuse this arm, e.g. on another harness or with rotation.
+  async N2V(opts, t0, out, clientOpts) {
+    const { client, log } = await bootAtmos(opts, t0, out, bootstrapProvider, clientOpts);
     if (!client) return;
     try {
       const beaconGet = (path) => client.fetch(BEACON + path).then((r) => r.json());
