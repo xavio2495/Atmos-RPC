@@ -6,6 +6,16 @@ const NYM_API = "https://validator.nymtech.net/api/v1";
 // worker version is a client release, not a change any RPC provider or specifier owner can make.
 const NYM_WORKER_HASH = "0xf13a448a8721b9d0b20da3d5b80ffe00bf4c5bb3aae812a38d3d1e3bc81fceb8";
 const SEL_WORKER_HASH = "0x3898587d"; // workerHash()
+const SEL_WORKER_RESOLVERS = "0x1c67ff29"; // workerResolvers()
+// Where the pinned bundle is fetched from (the specifier's list for that hash). A stale entry
+// costs availability, never integrity: the bytes must still hash to the pin.
+const NYM_WORKER_RESOLVERS = [
+  "https://cdn.jsdelivr.net/npm/@nymproject/anon-rpc-worker@0.1.0/dist/nym-anon-rpc-worker.js",
+  "https://unpkg.com/@nymproject/anon-rpc-worker@0.1.0/dist/nym-anon-rpc-worker.js",
+  "https://raw.githubusercontent.com/nymtech/anon-rpc-worker/keccak/f1/3a448a8721b9d0b20da3d5b80ffe00bf4c5bb3aae812a38d3d1e3bc81fceb8",
+];
+// The specifier lives on mainnet; the change-check asks this provider through the mixnet.
+const SPECIFIER_RPC = "https://ethereum-rpc.publicnode.com";
 const BOOT_TIMEOUT_MS = 120_000;
 const PROBE_TIMEOUT_MS = 24_000;
 // A healthy call through Nym completes in well under this; past it, the route is treated as stalled.
@@ -40,21 +50,29 @@ async function nymList(path) {
   return Array.isArray(j) ? j : (j.nodes?.data ?? j.data);
 }
 
-// The harness reads the worker hash from the specifier through the bootstrap provider with an
-// unproven eth_call. Answering that one read with the pinned hash means a lying provider can't
-// choose the code the harness verifies against; the bundle bytes must still match it.
-function pinWorkerHash(provider, address, hash, log) {
+function abiStringArray(strs) {
+  const word = (n) => n.toString(16).padStart(64, "0");
+  const bodies = strs.map((str) => {
+    const h = [...new TextEncoder().encode(str)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    return word(h.length / 2) + h.padEnd(Math.ceil(h.length / 64) * 64, "0");
+  });
+  let offset = strs.length * 32, heads = "";
+  for (const b of bodies) { heads += word(offset); offset += b.length / 2; }
+  return "0x" + word(32) + word(strs.length) + heads + bodies.join("");
+}
+
+// The harness reads the specifier (worker hash and resolvers) with unproven eth_calls through the
+// bootstrap provider, in the clear from the user's IP. Answering both from pins means a lying
+// provider can't choose the code, and no provider learns that this IP is booting the worker.
+// Any other call still goes to the provider.
+function pinSpecifier(provider, address, hash, resolvers) {
+  const answers = { [SEL_WORKER_HASH]: hash };
+  if (resolvers) answers[SEL_WORKER_RESOLVERS] = abiStringArray(resolvers);
   return {
     request(args) {
       const call = args?.params?.[0];
-      if (args?.method !== "eth_call" || call?.to?.toLowerCase() !== address.toLowerCase() || call?.data !== SEL_WORKER_HASH) {
-        return provider.request(args);
-      }
-      // Still ask, so an operator learns when the specifier moves on; the answer is never used.
-      Promise.resolve(provider.request(args)).then((live) => {
-        if (typeof live === "string" && live.toLowerCase() !== hash.toLowerCase()) log({ event: "specifier-changed", live });
-      }, () => {});
-      return Promise.resolve(hash);
+      const pinned = args?.method === "eth_call" && call?.to?.toLowerCase() === address.toLowerCase() && answers[call?.data];
+      return pinned ? Promise.resolve(pinned) : provider.request(args);
     },
   };
 }
@@ -100,9 +118,10 @@ async function postJson(worker, url, body, padBytes = 0) {
 // One Nym worker plus a per-origin queue: at most one request in flight per
 // origin, with everything that queued meanwhile sent as one JSON-RPC batch.
 class Route {
-  constructor(worker, padBytes = 0) {
+  constructor(worker, padBytes = 0, onWait = () => {}) {
     this.worker = worker;
     this.padBytes = padBytes;
+    this.onWait = onWait;
     this.queues = new Map();
     this.chains = new Map();
     this.warm = new Set();
@@ -122,7 +141,7 @@ class Route {
     return new Promise((resolve, reject) => {
       let q = this.queues.get(url);
       if (!q) { q = { pending: [], busy: false }; this.queues.set(url, q); }
-      q.pending.push({ body, resolve, reject });
+      q.pending.push({ body, resolve, reject, at: performance.now() });
       // Let calls issued in the same tick join one batch.
       queueMicrotask(() => this.#drain(url, q));
     });
@@ -133,6 +152,8 @@ class Route {
     q.busy = true;
     const max = MAX_BATCH[new URL(url).host] ?? DEFAULT_MAX_BATCH;
     const items = q.pending.splice(0, max);
+    const now = performance.now();
+    items.forEach((it) => this.onWait(now - it.at));
     try {
       if (items.length === 1) {
         items[0].resolve(await postJson(this.worker, url, items[0].body, this.padBytes));
@@ -153,6 +174,8 @@ class Route {
       this.#drain(url, q);
     }
   }
+
+  busy(url) { return this.queues.get(url)?.busy ?? false; }
 
   close() { this.worker.close(); }
 }
@@ -180,10 +203,15 @@ function hedgeDelay(latencies, lambdaMs) {
 //   so no route stays long enough to become a timing fingerprint. tunnel: extra options for the
 //   worker's mix tunnel (e.g. connectTimeoutMs); options the exit can observe make the client stand out.
 //   padBytes: pad every JSON-RPC request body to a multiple of this many bytes.
-//   workerHash: the worker bundle hash to run (defaults to the pinned Nym worker).
-export async function createAtmosClient({ bootstrapProvider, probeUrl, log = () => {}, Worker = AnonRpcWorker, hedgeLambdaMs = null, rotateMs = null, tunnel = {}, padBytes = 0, workerHash = NYM_WORKER_HASH }) {
+//   workerHash, workerResolvers: the worker bundle to run and where to fetch it (default: the
+//   pinned Nym worker). With a custom hash and no resolvers, the resolvers are read from the specifier.
+//   overflow: a read that would queue behind a request in flight goes to the warm standby instead
+//   (a second exit sees it).
+export async function createAtmosClient({ overflow = false, bootstrapProvider, probeUrl, log = () => {}, Worker = AnonRpcWorker, hedgeLambdaMs = null, rotateMs = null, tunnel = {}, padBytes = 0,
+  workerHash = NYM_WORKER_HASH, workerResolvers = workerHash === NYM_WORKER_HASH ? NYM_WORKER_RESOLVERS : null }) {
   const band = await loadBand();
-  const rpcProvider = pinWorkerHash(bootstrapProvider, NYM_SPECIFIER, workerHash, log);
+  const queueWaits = [];
+  const rpcProvider = pinSpecifier(bootstrapProvider, NYM_SPECIFIER, workerHash, workerResolvers);
   const usedExits = new Set();
 
   async function bootRoute() {
@@ -208,7 +236,7 @@ export async function createAtmosClient({ bootstrapProvider, probeUrl, log = () 
       });
       try {
         await withTimeout(worker.ready, BOOT_TIMEOUT_MS, "boot");
-        const route = new Route(worker, padBytes);
+        const route = new Route(worker, padBytes, (ms) => queueWaits.push(Math.round(ms)));
         for (let probe = 0; probe < 2; probe++) {
           try {
             const r = await withTimeout(route.send(probeUrl, { jsonrpc: "2.0", id: 0, method: "eth_chainId", params: [] }), PROBE_TIMEOUT_MS, "probe");
@@ -287,9 +315,9 @@ export async function createAtmosClient({ bootstrapProvider, probeUrl, log = () 
   }
 
   // The primary's answer, or the standby's if the primary is still silent after the hedge delay.
-  function hedged(origin, pending, attempt) {
+  function hedged(route, origin, pending, attempt) {
     const backup = secondary;
-    if (hedgeLambdaMs === null || !backup?.warm.has(origin) || latencies.length < HEDGE_MIN_SAMPLES) return pending;
+    if (hedgeLambdaMs === null || backup === route || !backup?.warm.has(origin) || latencies.length < HEDGE_MIN_SAMPLES) return pending;
     const d = hedgeDelay(latencies, hedgeLambdaMs);
     if (d === Infinity) return pending;
     return new Promise((resolve, reject) => {
@@ -318,8 +346,12 @@ export async function createAtmosClient({ bootstrapProvider, probeUrl, log = () 
   }
 
   async function withFailover(url, attempt) {
-    const route = primary;
     const origin = new URL(url).origin;
+    let route = primary;
+    if (overflow && primary.busy(url) && secondary?.warm.has(origin) && !secondary.busy(url)) {
+      route = secondary;
+      log({ event: "overflow" });
+    }
     usedOrigins.add(origin);
     const warm = route.warm.has(origin);
     const start = performance.now();
@@ -327,7 +359,7 @@ export async function createAtmosClient({ bootstrapProvider, probeUrl, log = () 
     if (warm) pending.then(() => { latencies.push(performance.now() - start); if (latencies.length > HEDGE_WINDOW) latencies.shift(); }, () => {});
     try {
       const timeout = warm ? ATTEMPT_TIMEOUT_MS : FIRST_CONTACT_TIMEOUT_MS;
-      const result = await withTimeout(hedged(origin, pending, attempt), timeout, "attempt");
+      const result = await withTimeout(hedged(route, origin, pending, attempt), timeout, "attempt");
       route.warm.add(origin);
       return result;
     } catch (e) {
@@ -346,8 +378,16 @@ export async function createAtmosClient({ bootstrapProvider, probeUrl, log = () 
     }
   }
 
+  // Learn, through the mixnet, when the specifier has moved past the pinned worker.
+  request(SPECIFIER_RPC, { jsonrpc: "2.0", id: 0, method: "eth_call", params: [{ to: NYM_SPECIFIER, data: SEL_WORKER_HASH }, "latest"] })
+    .then((r) => {
+      if (typeof r?.result === "string" && r.result.toLowerCase() !== workerHash.toLowerCase()) log({ event: "specifier-changed", live: r.result });
+    }, () => {});
+
   return {
     request,
+    // Milliseconds each JSON-RPC call spent queued behind a request in flight on its route.
+    stats: () => ({ queueWaitsMs: [...queueWaits] }),
     fetch: (url, init) => withFailover(url, (route) => route.fetch(url, init)),
     close() {
       clearTimeout(rotation);
