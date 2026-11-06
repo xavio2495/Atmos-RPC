@@ -1,5 +1,6 @@
 import { AnonRpcWorker } from "@anon-rpc/browser-harness";
 import { createAtmosClient } from "../../client/atmos.js";
+import { v2Arms } from "./arms-v2.js";
 
 const NYM_SPECIFIER = "0x3aCD9742C68F6d993066Ae25533e09b9e1f60eD0";
 const BOOTSTRAP_RPC = "https://ethereum-rpc.publicnode.com";
@@ -165,6 +166,7 @@ const ARMS = {
     await ARMS.N1(opts, t0, out, StallableWorker);
   },
 };
+Object.assign(ARMS, v2Arms({ workload, bootstrapProvider }));
 
 window.runSession = async (opts) => {
   const t0 = performance.now();

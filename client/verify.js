@@ -1,0 +1,378 @@
+import { bls12_381 } from "@noble/curves/bls12-381";
+import { sha256 } from "@noble/hashes/sha2";
+import { keccak_256 } from "@noble/hashes/sha3";
+
+// Fork epochs and versions from Electra on. A later fork changes the signing domain,
+// so its heads fail to verify until it is added here. From Gloas the light-client
+// header carries only the execution block hash, deeper in the block body.
+export const MAINNET = {
+  chainId: 1,
+  genesisTime: 1606824023,
+  genesisValidatorsRoot: "0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95",
+  forks: [[364032, "0x05000000"], [411392, "0x06000000"]],
+  gloasEpoch: Infinity,
+};
+export const SEPOLIA = {
+  chainId: 11155111,
+  genesisTime: 1655733600,
+  genesisValidatorsRoot: "0xd8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078",
+  forks: [[222464, "0x90000074"], [272640, "0x90000075"], [353024, "0x90000076"]],
+  gloasEpoch: 353024,
+};
+// Generalized-index depth and leaf index of each light-client branch.
+const BRANCH = {
+  electra: { current: [6, 22], next: [6, 23], execution: [4, 9] },
+  gloas: { current: [11, 897], next: [11, 898], execution: [11, 808] },
+};
+const SLOTS_PER_PERIOD = 8192;
+const DST = "BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
+const MAX_HEAD_AGE_S = 120;
+const HEAD_REFRESH_MS = 12_000;
+const EMPTY_TRIE = "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421";
+const EMPTY_CODE = "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470";
+const VERIFIABLE = new Set(["eth_getBalance", "eth_getTransactionCount", "eth_getStorageAt", "eth_getCode"]);
+// How far back a header is reached by walking parent hashes from the verified head.
+const MAX_HEADER_WALK = 64;
+// The priority fee has no verifiable answer; a provider's suggestion is capped at this.
+const MAX_TIP_WEI = 2_000_000_000n;
+
+const hex = (b) => "0x" + Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+const bytes = (h) => {
+  const s = h.startsWith("0x") ? h.slice(2) : h;
+  return Uint8Array.from(s.match(/../g) ?? [], (x) => parseInt(x, 16));
+};
+const concat = (...a) => {
+  const out = new Uint8Array(a.reduce((n, x) => n + x.length, 0));
+  let o = 0;
+  for (const x of a) { out.set(x, o); o += x.length; }
+  return out;
+};
+const equal = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+const quantity = (b) => "0x" + (b.length ? BigInt(hex(b)).toString(16) : "0");
+
+// SSZ hash_tree_root pieces for the few containers a light client needs.
+const chunk = (b) => { const c = new Uint8Array(32); c.set(b); return c; };
+const uint64 = (v) => { const c = new Uint8Array(32); let n = BigInt(v); for (let i = 0; i < 8; i++) { c[i] = Number(n & 255n); n >>= 8n; } return c; };
+const uint256 = (v) => { const c = new Uint8Array(32); let n = BigInt(v); for (let i = 0; i < 32; i++) { c[i] = Number(n & 255n); n >>= 8n; } return c; };
+function merkleize(chunks, limit = chunks.length) {
+  let width = 1;
+  while (width < limit) width *= 2;
+  let layer = [...chunks];
+  for (let zero = new Uint8Array(32); width > 1; width /= 2) {
+    const next = [];
+    for (let i = 0; i < width; i += 2) next.push(sha256(concat(layer[i] ?? zero, layer[i + 1] ?? zero)));
+    layer = next;
+    zero = sha256(concat(zero, zero));
+  }
+  return layer[0] ?? new Uint8Array(32);
+}
+const packed = (b) => Array.from({ length: Math.ceil(b.length / 32) }, (_, i) => chunk(b.slice(i * 32, i * 32 + 32)));
+
+const beaconRoot = (h) =>
+  merkleize([uint64(h.slot), uint64(h.proposer_index), bytes(h.parent_root), bytes(h.state_root), bytes(h.body_root)]);
+
+const executionRoot = (e) => {
+  const extra = bytes(e.extra_data);
+  return merkleize([
+    bytes(e.parent_hash), chunk(bytes(e.fee_recipient)), bytes(e.state_root), bytes(e.receipts_root),
+    merkleize(packed(bytes(e.logs_bloom))), bytes(e.prev_randao), uint64(e.block_number), uint64(e.gas_limit),
+    uint64(e.gas_used), uint64(e.timestamp), sha256(concat(merkleize(packed(extra), 1), uint64(extra.length))),
+    uint256(e.base_fee_per_gas), bytes(e.block_hash), bytes(e.transactions_root), bytes(e.withdrawals_root),
+    uint64(e.blob_gas_used), uint64(e.excess_blob_gas),
+  ]);
+};
+
+const committeeRoot = (c) =>
+  merkleize([
+    merkleize(c.pubkeys.map((p) => sha256(concat(bytes(p), new Uint8Array(16))))),
+    sha256(concat(bytes(c.aggregate_pubkey), new Uint8Array(16))),
+  ]);
+
+function branchOk(leaf, branch, depth, index, root) {
+  if (branch.length !== depth) return false;
+  let node = leaf;
+  for (let i = 0; i < depth; i++) {
+    node = (index >> i) & 1 ? sha256(concat(bytes(branch[i]), node)) : sha256(concat(node, bytes(branch[i])));
+  }
+  return equal(node, bytes(root));
+}
+
+const period = (slot) => Math.floor(Number(slot) / SLOTS_PER_PERIOD);
+const layout = (chain, slot) => (Math.floor(Number(slot) / 32) >= chain.gloasEpoch ? BRANCH.gloas : BRANCH.electra);
+
+function syncSignatureOk(chain, committee, aggregate, header, signatureSlot) {
+  const bits = bytes(aggregate.sync_committee_bits);
+  const signers = committee.pubkeys.filter((_, i) => (bits[i >> 3] >> (i & 7)) & 1);
+  if (signers.length * 3 < committee.pubkeys.length * 2) return false;
+  const epoch = Math.floor((Math.max(Number(signatureSlot), 1) - 1) / 32);
+  const fork = [...chain.forks].reverse().find(([e]) => epoch >= e);
+  if (!fork) return false;
+  const forkDataRoot = merkleize([chunk(bytes(fork[1])), bytes(chain.genesisValidatorsRoot)]);
+  const domain = concat(Uint8Array.of(7, 0, 0, 0), forkDataRoot.slice(0, 28));
+  const signingRoot = merkleize([beaconRoot(header), domain]);
+  const sigs = bls12_381.longSignatures;
+  return sigs.verify(aggregate.sync_committee_signature.slice(2), sigs.hash(signingRoot, DST), sigs.aggregatePublicKeys(signers.map((p) => p.slice(2))));
+}
+
+// RLP decoding, enough for trie nodes and account values.
+function rlpDecode(b) {
+  const [item, end] = rlpItem(b, 0);
+  if (end !== b.length) throw new Error("rlp trailing bytes");
+  return item;
+}
+function rlpItem(b, o) {
+  const p = b[o];
+  if (p < 0x80) return [b.slice(o, o + 1), o + 1];
+  const long = (base) => { const n = p - base; let len = 0; for (let i = 0; i < n; i++) len = len * 256 + b[o + 1 + i]; return [o + 1 + n, len]; };
+  if (p < 0xb8) return [b.slice(o + 1, o + 1 + p - 0x80), o + 1 + p - 0x80];
+  if (p < 0xc0) { const [s, len] = long(0xb7); return [b.slice(s, s + len), s + len]; }
+  const [s, len] = p < 0xf8 ? [o + 1, p - 0xc0] : long(0xf7);
+  const out = [];
+  for (let i = s; i < s + len;) { const [x, n] = rlpItem(b, i); out.push(x); i = n; }
+  return [out, s + len];
+}
+
+function rlpEncode(x) {
+  const len = (n, base) => {
+    if (n < 56) return Uint8Array.of(base + n);
+    const l = bytes(n.toString(16).padStart(2 * Math.ceil(n.toString(16).length / 2), "0"));
+    return concat(Uint8Array.of(base + 55 + l.length), l);
+  };
+  if (Array.isArray(x)) { const body = concat(...x.map(rlpEncode)); return concat(len(body.length, 0xc0), body); }
+  return x.length === 1 && x[0] < 0x80 ? x : concat(len(x.length, 0x80), x);
+}
+
+// Header fields in hash order; trailing ones exist only from the fork that added them.
+const HEADER_FIELDS = [
+  ["parentHash"], ["sha3Uncles"], ["miner"], ["stateRoot"], ["transactionsRoot"], ["receiptsRoot"], ["logsBloom"],
+  ["difficulty", 1], ["number", 1], ["gasLimit", 1], ["gasUsed", 1], ["timestamp", 1], ["extraData"], ["mixHash"], ["nonce"],
+  ["baseFeePerGas", 1], ["withdrawalsRoot"], ["blobGasUsed", 1], ["excessBlobGas", 1], ["parentBeaconBlockRoot"],
+  ["requestsHash"], ["blockAccessListHash"], ["slotNumber", 1],
+];
+const headerHash = (h) =>
+  hex(keccak_256(rlpEncode(HEADER_FIELDS.filter(([k]) => h[k] !== undefined).map(([k, isQuantity]) => {
+    if (!isQuantity) return bytes(h[k]);
+    const n = BigInt(h[k]);
+    return n === 0n ? new Uint8Array() : bytes(n.toString(16).padStart(2 * Math.ceil(n.toString(16).length / 2), "0"));
+  }))));
+
+const nibbles = (b) => Array.from(b).flatMap((x) => [x >> 4, x & 15]);
+
+// Walks a Merkle-Patricia proof from `root` along keccak(key). Returns the leaf
+// value, or null when the proof shows the key is absent.
+function trieGet(root, key, proof) {
+  const nodes = new Map(proof.map((n) => { const b = bytes(n); return [hex(keccak_256(b)), b]; }));
+  const path = nibbles(keccak_256(key));
+  let ref = bytes(root), at = 0;
+  for (;;) {
+    let node;
+    if (Array.isArray(ref)) node = ref;
+    else if (ref.length === 0) return null;
+    else {
+      const raw = ref.length === 32 ? nodes.get(hex(ref)) : ref;
+      if (!raw) throw new Error("proof missing node");
+      node = rlpDecode(raw);
+    }
+    if (node.length === 17) {
+      if (at === path.length) return node[16].length ? node[16] : null;
+      ref = node[path[at++]];
+      continue;
+    }
+    if (node.length !== 2) throw new Error("bad trie node");
+    const enc = nibbles(node[0]);
+    const leaf = enc[0] >= 2;
+    const part = enc.slice(enc[0] % 2 ? 1 : 2);
+    if (!part.every((n, i) => path[at + i] === n)) return null;
+    at += part.length;
+    if (leaf) return at === path.length ? node[1] : null;
+    ref = node[1];
+  }
+}
+
+// Reads checked against a light-client header: the sync committee signs the head,
+// the head commits to the execution state root, and eth_getProof proves each value
+// under that root. `request(url, body)` is the JSON-RPC transport; `beaconGet(path)`
+// returns parsed JSON from a beacon API. Anything that can't be checked is rejected.
+export async function createVerifiedReader({ request, beaconGet, checkpoint, providers, chain = MAINNET, log = () => {} }) {
+  const boot = (await beaconGet(`/eth/v1/beacon/light_client/bootstrap/${checkpoint}`)).data;
+  if (!boot) throw new Error("bootstrap not served for checkpoint");
+  if (hex(beaconRoot(boot.header.beacon)) !== checkpoint.toLowerCase()) throw new Error("bootstrap does not match checkpoint");
+  if (!branchOk(committeeRoot(boot.current_sync_committee), boot.current_sync_committee_branch, ...layout(chain, boot.header.beacon.slot).current, boot.header.beacon.state_root)) {
+    throw new Error("bad bootstrap committee");
+  }
+  const committees = new Map([[period(boot.header.beacon.slot), boot.current_sync_committee]]);
+  let head = null, headAt = 0, refreshing = null;
+  const headers = new Map();
+
+  // Move the committee forward one period at a time, each signed by the one before.
+  async function committeeFor(p) {
+    while (!committees.has(p)) {
+      const known = Math.max(...committees.keys());
+      if (known > p) throw new Error("period before checkpoint");
+      const updates = await beaconGet(`/eth/v1/beacon/light_client/updates?start_period=${known}&count=1`);
+      const u = (Array.isArray(updates) ? updates[0] : updates.data?.[0])?.data;
+      if (!u || period(u.attested_header.beacon.slot) !== known || period(u.signature_slot) !== known) throw new Error("no update for period");
+      if (!branchOk(committeeRoot(u.next_sync_committee), u.next_sync_committee_branch, ...layout(chain, u.attested_header.beacon.slot).next, u.attested_header.beacon.state_root)) throw new Error("bad next committee");
+      if (!syncSignatureOk(chain, committees.get(known), u.sync_aggregate, u.attested_header.beacon, u.signature_slot)) throw new Error("bad update signature");
+      committees.set(known + 1, u.next_sync_committee);
+      log({ event: "committee", period: known + 1 });
+    }
+    return committees.get(p);
+  }
+
+  async function refreshHead() {
+    const u = (await beaconGet("/eth/v1/beacon/light_client/optimistic_update")).data;
+    const h = u.attested_header;
+    const gloas = layout(chain, h.beacon.slot) === BRANCH.gloas;
+    const leaf = gloas ? bytes(h.execution_block_hash) : executionRoot(h.execution);
+    if (!branchOk(leaf, h.execution_branch, ...layout(chain, h.beacon.slot).execution, h.beacon.body_root)) throw new Error("bad execution branch");
+    if (!syncSignatureOk(chain, await committeeFor(period(u.signature_slot)), u.sync_aggregate, h.beacon, u.signature_slot)) throw new Error("bad head signature");
+    if (Date.now() / 1000 - (chain.genesisTime + Number(h.beacon.slot) * 12) > MAX_HEAD_AGE_S) throw new Error("stale head");
+    // From Gloas the signed head names only a block hash; its header is fetched and must hash to it.
+    const next = gloas
+      ? await onProviders({ jsonrpc: "2.0", id: 3, method: "eth_getBlockByHash", params: [h.execution_block_hash, false] }, (b) => {
+          if (!b || headerHash(b) !== h.execution_block_hash.toLowerCase()) throw new Error("header does not match block hash");
+          headers.set(b.hash, b);
+          return { number: Number(b.number), stateRoot: b.stateRoot, hash: b.hash };
+        })
+      : { number: Number(h.execution.block_number), stateRoot: h.execution.state_root, hash: h.execution.block_hash };
+    if (!head || next.number > head.number) head = next;
+    headAt = Date.now();
+  }
+  const currentHead = async () => {
+    if (!head || Date.now() - headAt > HEAD_REFRESH_MS) {
+      refreshing ??= refreshHead().finally(() => { refreshing = null; });
+      await refreshing;
+    }
+    return head;
+  };
+  // Open the connection to the first proof provider while the head is verified,
+  // so the first reads don't pay for it.
+  await Promise.all([currentHead(), request(providers[0], { jsonrpc: "2.0", id: 0, method: "eth_chainId", params: [] })]);
+
+  // One call, tried on each provider in turn; only this call moves on, not its batch.
+  async function onProviders(body, check) {
+    let last;
+    for (const url of providers) {
+      try {
+        const r = await request(url, body);
+        if (r.error) throw new Error(r.error.message);
+        return check(r.result);
+      } catch (e) {
+        last = e;
+        log({ event: "verify-retry", url, method: body.method, reason: String(e?.message ?? e).slice(0, 80) });
+      }
+    }
+    throw last;
+  }
+
+  // An account, chosen storage slots and (optionally) its code, each proven under
+  // the state root of `head`. Slots are 32-byte hex keys; values come back as 32-byte hex.
+  async function account(address, slots, head, withCode) {
+    address = address.toLowerCase();
+    const block = "0x" + head.number.toString(16);
+    const proof = { jsonrpc: "2.0", id: 1, method: "eth_getProof", params: [address, slots, block] };
+    const a = await onProviders(proof, (p) => {
+      const value = trieGet(head.stateRoot, bytes(address), p.accountProof);
+      const [nonce, balance, storageRoot, codeHash] = value ? rlpDecode(value) : [new Uint8Array(), new Uint8Array(), bytes(EMPTY_TRIE), bytes(EMPTY_CODE)];
+      const storage = {};
+      slots.forEach((slot, i) => {
+        const sp = p.storageProof?.[i];
+        if (!sp || BigInt(sp.key) !== BigInt(slot)) throw new Error("missing storage proof");
+        const v = trieGet(hex(storageRoot), bytes(slot), sp.proof);
+        storage[slot] = "0x" + hex(v ? rlpDecode(v) : new Uint8Array()).slice(2).padStart(64, "0");
+      });
+      return { exists: Boolean(value), nonce: quantity(nonce), balance: quantity(balance), storageRoot: hex(storageRoot), codeHash: hex(codeHash), storage };
+    });
+    if (withCode) {
+      a.code = a.codeHash === EMPTY_CODE ? "0x" : await onProviders({ jsonrpc: "2.0", id: 2, method: "eth_getCode", params: [address, block] }, (c) => {
+        if (hex(keccak_256(bytes(c))) !== a.codeHash) throw new Error("code does not match code hash");
+        return c;
+      });
+    }
+    return a;
+  }
+
+  async function read(method, params) {
+    const tag = method === "eth_getStorageAt" ? params[2] : params[1];
+    if (tag !== undefined && tag !== "latest") throw new Error("not verifiable: block tag");
+    const slots = method === "eth_getStorageAt" ? ["0x" + BigInt(params[1]).toString(16).padStart(64, "0")] : [];
+    const a = await account(params[0], slots, await currentHead(), method === "eth_getCode");
+    if (method === "eth_getBalance") return a.balance;
+    if (method === "eth_getTransactionCount") return a.nonce;
+    if (method === "eth_getStorageAt") return a.storage[slots[0]];
+    return a.code;
+  }
+
+  // A header is trusted when it hashes to a hash already trusted: the head's, or a
+  // trusted child's parentHash.
+  async function headerByHash(hash) {
+    hash = hash.toLowerCase();
+    if (!headers.has(hash)) {
+      await onProviders({ jsonrpc: "2.0", id: 4, method: "eth_getBlockByHash", params: [hash, false] }, (b) => {
+        if (!b || headerHash(b) !== hash) throw new Error("header does not match block hash");
+        headers.set(hash, b);
+        if (headers.size > 4 * MAX_HEADER_WALK) headers.delete(headers.keys().next().value);
+      });
+    }
+    return headers.get(hash);
+  }
+
+  async function headerByNumber(tag) {
+    const top = await currentHead();
+    const n = tag === "latest" || tag === undefined ? top.number : Number(tag);
+    if (!(n <= top.number && top.number - n <= MAX_HEADER_WALK)) throw new Error("not verifiable: block outside the verified window");
+    let b = await headerByHash(top.hash);
+    while (Number(b.number) > n) b = await headerByHash(b.parentHash);
+    return b;
+  }
+
+  async function findHeader(hash) {
+    let b = await headerByHash((await currentHead()).hash);
+    for (let i = 0; i <= MAX_HEADER_WALK; i++) {
+      if (b.hash.toLowerCase() === hash.toLowerCase()) return b;
+      b = await headerByHash(b.parentHash);
+    }
+    throw new Error("not verifiable: block outside the verified window");
+  }
+
+  async function tip() {
+    const r = await onProviders({ jsonrpc: "2.0", id: 5, method: "eth_maxPriorityFeePerGas", params: [] }, (t) => BigInt(t));
+    return r > MAX_TIP_WEI ? MAX_TIP_WEI : r;
+  }
+
+  async function verifiedRequest(url, body) {
+    const reply = (result) => ({ jsonrpc: "2.0", id: body.id, result });
+    const params = body.params ?? [];
+    if (body.method === "eth_chainId") return reply("0x" + chain.chainId.toString(16));
+    if (body.method === "eth_blockNumber") return reply("0x" + (await currentHead()).number.toString(16));
+    // Block objects carry verified header fields; their transaction list is the provider's.
+    if (body.method === "eth_getBlockByNumber" && !params[1]) return reply(await headerByNumber(params[0]));
+    if (body.method === "eth_getBlockByHash" && !params[1]) return reply(await findHeader(params[0]));
+    if (body.method === "eth_maxPriorityFeePerGas") return reply("0x" + (await tip()).toString(16));
+    if (body.method === "eth_gasPrice") {
+      const base = BigInt((await headerByNumber("latest")).baseFeePerGas);
+      return reply("0x" + (base + (await tip())).toString(16));
+    }
+    if (body.method === "eth_sendRawTransaction") {
+      const r = await request(url, body);
+      if (r.result !== undefined && r.result.toLowerCase() !== hex(keccak_256(bytes(params[0])))) throw new Error("tx hash mismatch");
+      return r;
+    }
+    if (!VERIFIABLE.has(body.method)) throw new Error(`not verifiable: ${body.method}`);
+    try {
+      return reply(await read(body.method, params));
+    } catch (e) {
+      return { jsonrpc: "2.0", id: body.id, error: { code: -32000, message: String(e?.message ?? e) } };
+    }
+  }
+
+  return {
+    request: verifiedRequest,
+    head: currentHead,
+    header: headerByNumber,
+    account,
+    // An unverified answer, for hints such as access lists that are checked later.
+    hint: (body) => onProviders(body, (r) => r),
+  };
+}
