@@ -1,0 +1,53 @@
+<svelte:head>
+	<title>How it works · Atmos</title>
+</svelte:head>
+
+<span class="eyebrow">How it works</span>
+
+# Hiding the IP is the first step, not the last
+
+<p class="lede">anon-rpc lets a wallet send its RPC calls through an anonymity network from inside a sandboxed, hash-pinned worker. Atmos is a client layer on top of it. It makes that path fast and reliable enough to leave on by default, and then works on what a provider can still see.</p>
+
+## What anon-rpc does
+
+A wallet creates an `AnonRpcWorker` from a specifier contract address. The harness reads the worker's hash from the chain, fetches the bundle, checks its hash and runs it in a sandbox with a small capability API. The wallet gets back an anonymous `fetch`. Nym, Nox and Tor each ship a worker. The provider sees an exit's IP address instead of the user's.
+
+## What a provider still sees
+
+Removing the IP is one of five things an RPC user needs:
+
+| | Property | Behind stock anon-rpc |
+|---|---|---|
+| P1 | **Content** | The provider sees every address and every call. An address is an identity. |
+| P2 | **Linkage** | Calls on one session link together, and sessions can be re-linked by their timing. |
+| P3 | **Integrity** | Nothing checks the answers. Both the provider and the exit could lie. |
+| P4 | **Availability** | A provider can refuse anonymised traffic, and some do. |
+| P5 | **Writes** | A signed transaction names its sender, whatever the IP. |
+
+On top of that, the anonymous path is slow in ways a wallet notices: parallel reads queue behind fresh connections, the first call to each provider costs seconds, and a worker can report ready on a route that is already dead.
+
+## What Atmos adds, in three stages
+
+### v1: the harness layer (built)
+
+v1 wraps the stock browser harness. It needs no change to any network's worker.
+
+1. **Route selection from public data.** Atmos picks the entry gateway and the exit uniformly from the Nym directory's top performance band, and checks that the entry answers. Choosing uniformly from public data uses nothing about the client.
+2. **A probe before trust.** A worker counts as usable only once a real call gets through. `ready` alone does not prove the route works.
+3. **A standby route.** A second worker boots on a different exit. If a call stalls, traffic moves to the standby, and a new standby boots behind it.
+4. **Batch, don't fan out.** Calls issued together to one provider go out as a single JSON-RPC batch, one request in flight per provider. Each provider's batch limit is respected.
+5. **Careful writes.** A transaction in flight is never sent twice, and is never raced or retried on another route.
+
+### v2: verified and shaped (planned)
+
+- **Proof-checked reads.** Each read becomes an `eth_getProof` at a block pinned by a light client, so a lying exit or provider can only cause a failure, never a wrong answer.
+- **Constant-rate traffic.** Padded batches leave on a fixed schedule with a random phase per session, and a fresh exit per session. In our model, that brings timing re-linkage down to chance.
+- **Provider splitting.** Each address is read from one provider, on its own session, so no single provider sees the whole set.
+
+### v3: the transport (planned)
+
+A modified build of the Nym client's network stack: a warm pool of connections per provider, safe retries for idempotent reads, and HTTP/2. This needs a fork, which is why it comes last.
+
+## What it costs
+
+Every stage trades something. Batching and failover cost nothing in privacy terms. Proofs make each read 150–250 times larger, which matters on a mixnet: about 70 ms per KB of reply in our measurements. Constant-rate traffic adds about one slot of waiting to every call. The [benchmarks](/benchmarks/) measure what each stage actually buys.

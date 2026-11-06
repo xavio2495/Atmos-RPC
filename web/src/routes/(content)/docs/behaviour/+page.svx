@@ -1,0 +1,62 @@
+<svelte:head>
+	<title>Routing & batching · Atmos docs</title>
+</svelte:head>
+
+<span class="eyebrow">Docs · Concepts</span>
+
+# Routing & batching
+
+<p class="lede">What Atmos does with each call, and the measurement behind each choice.</p>
+
+## Routes
+
+A **route** is one stock Nym worker, pinned to one entry gateway and one exit. Atmos keeps two: a **primary** that carries traffic, and a **standby** that is booted and probed but idle.
+
+### How a route is chosen
+
+Entries and exits are drawn uniformly from the Nym directory's top performance band (score ≥ 0.99). An entry must also accept a WebSocket within 5 seconds, and an exit is never reused within one client.
+
+Choosing uniformly, from public data only, matters. Ranking routes by the client's own latency measurements would leak something about where the client is. In live tests, the band avoided the dead routes that the default discovery sometimes picked. Ranking by the client's round-trip time bought nothing.
+
+### Why a probe
+
+A worker can resolve `ready` on a route that cannot carry a single call. On 2026-11-06, two of four band-selected workers did exactly that: ready in under 10 seconds, then every call timed out. So Atmos sends `eth_chainId` to `probeUrl` before it trusts a route, and the probe doubles as warming the connection to that provider.
+
+### Failover
+
+If a call on the primary takes longer than 8 seconds, or fails:
+
+1. The standby becomes the primary, and the call is sent again there.
+2. The old primary is **retired**, not closed: it stays open for 30 seconds so calls already on it can still finish.
+3. A new standby starts booting in the background.
+
+A route that stalls usually stays stalled: in a 38-minute soak test, one route timed out four calls in a row over ten minutes before it recovered on its own. Moving after one stall avoids waiting that out.
+
+## Batching
+
+Inside a route, each provider URL has a queue, with **at most one request in flight per URL**. Everything that queues while a request is in flight, and every call made in the same tick, leaves as one JSON-RPC batch, up to the provider's limit.
+
+Why: the stock Nym transport keeps one pooled connection per origin, so each extra concurrent call opens a fresh TCP and TLS connection through the mixnet, one at a time. In one test, ten parallel reads took 8.5–9.9 s, while the same ten reads as one batch took 1.1–1.5 s.
+
+| Provider host | Most calls per batch |
+|---|---|
+| `eth.drpc.org` | 3 (free tier limit) |
+| any other | 10 |
+
+Each reply is split back to its caller by `id`, and your own `id` is restored.
+
+## Writes
+
+`eth_sendRawTransaction` gets three rules:
+
+- **Deduplicated.** A second send of the same raw transaction while the first is in flight returns the first one's promise.
+- **Never retried, never failed over.** A write that times out or fails is reported, because resending a signed transaction is the wallet's decision.
+- **Primary only.** Writes go out on the current primary route.
+
+In v1, writes share the per-URL queue with reads, so a write issued alongside reads to the same URL can travel in their batch.
+
+## What isn't in v1
+
+- **Answers are not verified.** The provider and the exit are trusted for content, as with stock anon-rpc.
+- **Traffic is not shaped.** Timing can still re-link sessions.
+- **One network.** v1 runs on Nym only.

@@ -1,0 +1,40 @@
+<svelte:head>
+	<title>Troubleshooting · Atmos docs</title>
+</svelte:head>
+
+<span class="eyebrow">Docs · Help</span>
+
+# Troubleshooting
+
+<p class="lede">The failures seen while building Atmos, and what each one means.</p>
+
+## `createAtmosClient` rejects with `no working route`
+
+Four routes in a row failed to boot or to answer their probe. Pass a `log` callback to see the `route-rejected` events and their reasons.
+
+- **`probe`** on every attempt: the probe URL may be refusing mixnet exits. Try `https://rpc.mevblocker.io`. `1rpc.io` returns 403 to Nym exits.
+- **`boot timeout`**: the worker didn't become ready within 120 s. That is usually the network on the client side, or the Nym directory being slow. Booting several clients at once in one browser is markedly slower than booting one.
+
+## The first call is slow
+
+The first call to a provider that wasn't the probe URL opens a new connection through the mixnet, which costs from 4 to 26 seconds. Use the same URL for `probeUrl` as for your first calls, so that connection is already warm.
+
+## Calls are slow when the tab is in the background
+
+Browsers throttle timers in hidden tabs. Latency measured in a background tab is not representative, and a timeout can fire late. Measure with the tab visible.
+
+## A call returned `{ error: { code: 4444, … } }`
+
+publicnode sometimes rejects `eth_getProof` near the chain head with "distance to target block exceeds maximum proof window". Use mevblocker for proofs, or ask for a block a few behind the head.
+
+## A batch failed with an error about batch size
+
+Some free tiers cap batch size. drpc's free plan rejects batches of more than 3, and Atmos already respects that. For another provider with a low cap, use a different provider.
+
+## `missing batch member`
+
+The provider's batch reply had no entry for one of the calls in it, usually because it returned a single error object for the whole batch (rate-limited, or the batch was refused). The call rejects; retry it, or switch provider.
+
+## Everything worked, then calls started failing over
+
+A route can stall for minutes at a time. That's what the standby is for. Frequent `failover` events with every new route are more likely a provider rate-limiting the exits you are using. Spread calls across providers.

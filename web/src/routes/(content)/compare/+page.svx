@@ -1,0 +1,71 @@
+<svelte:head>
+	<title>Atmos vs stock anon-rpc</title>
+</svelte:head>
+
+<span class="eyebrow">Compare</span>
+
+# Atmos and stock anon-rpc
+
+<p class="lede">Atmos does not replace anon-rpc. It runs the same hash-pinned Nym worker through the same browser harness, so the trust model is unchanged. What changes is how calls are scheduled, which routes are trusted, and what happens when one stalls.</p>
+
+## Side by side
+
+| | Stock anon-rpc (Nym worker) | Atmos v1 |
+|---|---|---|
+| **Route choice** | The worker's default gateway and exit discovery | Uniform within the Nym directory's top performance band; the entry must answer a WebSocket within 5 s |
+| **When is a route trusted?** | When `ready` resolves | When `ready` resolves **and** a real call succeeds (2 tries) |
+| **Dead route after ready** | Possible; seen in 2 of 4 workers in one test | Rejected at boot; the next exit is tried (up to 4) |
+| **A call stalls** | The caller waits for the worker's own timeout | After 8 s, traffic moves to a warm standby route |
+| **10 parallel reads** | 10 connections, opened one after another through the mixnet | One JSON-RPC batch on a warm connection |
+| **Provider batch limits** | Not tracked | Respected (drpc's free tier: 3 per batch) |
+| **Duplicate sends** | Both reach the node | Deduplicated while in flight |
+| **Writes on failover** | n/a | Never retried on another route |
+| **Interface** | A standard `fetch` | `request(url, jsonRpcBody)`, returning the JSON-RPC response |
+
+## The same read, both ways
+
+Stock anon-rpc, from its wallet guide:
+
+```js
+import { AnonRpcWorker } from "@anon-rpc/browser-harness";
+
+const worker = new AnonRpcWorker({
+  address: "0x3aCD9742C68F6d993066Ae25533e09b9e1f60eD0", // Nym worker, mainnet
+  preExisting: { rpcProvider: bootstrapProvider },
+});
+
+const res = await worker.fetch("https://rpc.mevblocker.io", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [] }),
+});
+const { result } = await res.json();
+```
+
+Atmos:
+
+```js
+import { createAtmosClient } from "./atmos.js";
+
+const atmos = await createAtmosClient({
+  bootstrapProvider,
+  probeUrl: "https://rpc.mevblocker.io",
+});
+
+const { result } = await atmos.request("https://rpc.mevblocker.io", {
+  jsonrpc: "2.0", id: 1, method: "eth_blockNumber", params: [],
+});
+```
+
+The difference shows up once a wallet does what wallets do: open with a burst of parallel reads, poll, and keep going when a route goes bad.
+
+## What Atmos does not change
+
+- **The trust model.** You still trust the on-chain worker hash, and the bootstrap provider for one read.
+- **What the provider sees.** The provider still sees every call's content. Verified reads and provider splitting come in v2.
+- **Timing.** v1 does not shape traffic, so sessions can still be re-linked by their timing. That also comes in v2.
+- **Networks.** v1 runs on Nym only. The stock harness also runs Nox and Tor workers.
+
+## Numbers
+
+The [benchmarks](/benchmarks/) page has the measured comparison, run from Cloud Run with headless Chromium.

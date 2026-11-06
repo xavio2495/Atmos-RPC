@@ -1,0 +1,87 @@
+<svelte:head>
+	<title>Wallet guide · Atmos docs</title>
+</svelte:head>
+
+<span class="eyebrow">Docs · Guide</span>
+
+# Wallet guide
+
+<p class="lede">Most wallet code talks to an EIP-1193 provider, not to raw JSON-RPC. A dozen lines turn an Atmos client into one, and from there viem, ethers and web3.js work unchanged.</p>
+
+## An EIP-1193 provider
+
+This adapter is your code, not part of Atmos. It picks the RPC URL and turns JSON-RPC errors back into thrown errors, which is what EIP-1193 callers expect.
+
+```js
+import { createAtmosClient } from "./atmos.js";
+
+export async function createAnonymousProvider({ rpcUrl, bootstrapProvider }) {
+  const atmos = await createAtmosClient({ bootstrapProvider, probeUrl: rpcUrl });
+  let id = 0;
+
+  return {
+    async request({ method, params = [] }) {
+      const reply = await atmos.request(rpcUrl, { jsonrpc: "2.0", id: ++id, method, params });
+      if (reply.error) {
+        const err = new Error(reply.error.message);
+        err.code = reply.error.code;
+        err.data = reply.error.data;
+        throw err;
+      }
+      return reply.result;
+    },
+    close: () => atmos.close(),
+  };
+}
+```
+
+## viem
+
+```js
+import { createPublicClient, custom } from "viem";
+import { mainnet } from "viem/chains";
+
+const provider = await createAnonymousProvider({
+  rpcUrl: "https://rpc.mevblocker.io",
+  bootstrapProvider,
+});
+
+const client = createPublicClient({ chain: mainnet, transport: custom(provider) });
+const balance = await client.getBalance({ address: "0x00000000219ab540356cBB839Cbe05303d7705Fa" });
+```
+
+There's no need to turn on viem's own batching. Calls that reach Atmos in the same tick, or while another call to the same URL is in flight, leave together as one batch.
+
+## ethers v6
+
+```js
+import { BrowserProvider } from "ethers";
+
+const provider = new BrowserProvider(
+  await createAnonymousProvider({ rpcUrl: "https://rpc.mevblocker.io", bootstrapProvider }),
+);
+const block = await provider.getBlockNumber();
+```
+
+## Startup in a wallet
+
+`createAtmosClient` waits until a route is proven, which takes from about 10 seconds to a minute. Two patterns work well:
+
+- **Start it at app load,** before the user does anything, and keep the promise. The first screen can show cached or placeholder balances until it resolves.
+- **Keep one client for the session.** Each new client boots new routes, and pays that cost again.
+
+## Signing and sending
+
+Atmos never sees keys. Sign in the wallet as usual, then send the raw transaction through the provider:
+
+```js
+const hash = await provider.request({ method: "eth_sendRawTransaction", params: [signedTx] });
+```
+
+A second identical send while the first is in flight returns the first one's result rather than reaching the node twice. A failed send is reported to you, not retried, so the wallet stays in charge of what happens next.
+
+<div class="callout warn"><p><strong>The sender is in the transaction.</strong> Hiding the IP doesn't hide the address that signed it. Atmos hides where a transaction came from on the network, not who sent it on chain.</p></div>
+
+## Several chains
+
+One client's routes carry calls to any URL, and each URL gets its own queue. For several chains, either use one client and pass each chain's URL, or keep one client per chain if you want their traffic on separate routes.

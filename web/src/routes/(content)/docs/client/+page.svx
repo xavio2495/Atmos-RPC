@@ -1,0 +1,80 @@
+<svelte:head>
+	<title>Client API · Atmos docs</title>
+</svelte:head>
+
+<span class="eyebrow">Docs · Reference</span>
+
+# Client API
+
+<p class="lede">The whole surface is one async factory and the two methods on what it returns.</p>
+
+## `createAtmosClient(options)`
+
+```ts
+function createAtmosClient(options: {
+  bootstrapProvider: { request(args: { method: string; params?: unknown[] }): Promise<unknown> };
+  probeUrl: string;
+  log?: (event: AtmosEvent) => void;
+}): Promise<AtmosClient>;
+```
+
+| Option | Required | What it is |
+|---|---|---|
+| `bootstrapProvider` | yes | An EIP-1193-style object. The harness uses it once per worker to read the worker hash from the specifier contract. That read is not anonymised. |
+| `probeUrl` | yes | A JSON-RPC URL. Each new route must answer `eth_chainId` here before it is used. |
+| `log` | no | Called with an event object whenever a route is accepted, rejected or failed over. |
+
+It resolves once a first route is accepted, and rejects with `Error("no working route")` after four failed attempts. A standby route starts booting as soon as it resolves.
+
+## `client.request(url, body)`
+
+```ts
+request(url: string, body: JsonRpcRequest): Promise<JsonRpcResponse>;
+```
+
+Sends one JSON-RPC call to `url` through the mixnet, and resolves to the provider's JSON-RPC response object, `{ jsonrpc, id, result }` or `{ jsonrpc, id, error }`. Your `id` comes back unchanged, even when the call travelled inside a batch.
+
+- **A JSON-RPC error is a normal reply, not an exception.** `request` resolves with it; check `reply.error`.
+- **It rejects** when the route fails and nothing is left to retry on: the call timed out with no standby ready, the worker errored, or a batch reply had no member for this call (`missing batch member`).
+- **Calls to the same URL** made in the same tick, or while another call to that URL is in flight, leave together as one JSON-RPC batch. See [Routing & batching](/docs/behaviour/).
+- **`eth_sendRawTransaction`** is deduplicated while in flight (a second identical send returns the first send's promise) and is never retried or moved to the standby route. In v1 it still shares the per-provider queue, so a write issued in the same tick as reads to the same URL joins their batch. Send writes to their own URL, or on their own tick, if that matters to you.
+
+## `client.close()`
+
+Closes every worker: the primary, the standby, and any route still draining after a failover. Calls still in flight reject.
+
+## Events
+
+`log` receives plain objects:
+
+| `event` | Other fields | When |
+|---|---|---|
+| `route-accepted` | `attempt`, `probe` | A route answered its probe and is now usable |
+| `route-rejected` | `attempt`, `reason` | A route failed: `boot timeout`, a worker error, or `probe` |
+| `failover` | | A call stalled or failed on the primary, and the standby took over |
+
+```js
+const atmos = await createAtmosClient({
+  bootstrapProvider,
+  probeUrl: RPC,
+  log: (e) => console.debug("[atmos]", e),
+});
+```
+
+## Timeouts and limits
+
+These are constants in v1, not options.
+
+| Constant | Value | Meaning |
+|---|---|---|
+| Boot timeout | 120 s | Longest wait for a worker's `ready` |
+| Probe timeout | 24 s | Per probe call; two probes per route |
+| Attempt timeout | 8 s | A call slower than this (or one that fails) moves to the standby route |
+| Retire grace | 30 s | A replaced route stays open this long, so calls already on it can finish |
+| Batch size | 10 (drpc: 3) | Most calls per JSON-RPC batch, per provider host |
+| Gateway check | 5 s | An entry gateway must accept a WebSocket within this |
+| Performance band | ≥ 0.99 | Minimum Nym directory score for entries and exits |
+
+## The worker
+
+Atmos runs the Nym worker published at specifier `0x3aCD9742C68F6d993066Ae25533e09b9e1f60eD0` on mainnet, with `preferredGateway` and `preferredIpr` set from its own route choice. The bundle is fetched and hash-checked by the stock harness exactly as without Atmos.

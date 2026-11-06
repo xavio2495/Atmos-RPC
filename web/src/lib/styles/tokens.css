@@ -1,0 +1,136 @@
+/* Atmos design tokens.
+   Light theme is "haze": a cool, slightly blue-grey sky with deep slate ink.
+   Dark theme is "night": the same sky after dusk.
+   One accent hue (aurora green). The only sanctioned second hue is --status-error. */
+
+@import '@fontsource-variable/bricolage-grotesque';
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+
+:root {
+	/* surfaces */
+	--paper: #e9eef0; /* frame and page ground */
+	--surface-0: #f6f8f9; /* tile ground, cards */
+	--surface-1: #dfe6e9; /* inset panels, code */
+	--surface-2: #ffffff;
+	--hairline: rgba(16, 32, 40, 0.1);
+
+	/* ink */
+	--ink-0: #102028;
+	--ink-1: #4d5f68;
+	--ink-2: #8a9aa2;
+
+	/* accent: aurora */
+	--accent: #0f8a72;
+	--accent-tint: #dcefe9;
+	--accent-soft: #9fd4c6;
+	--accent-deep: #0a5f4f;
+
+	/* the sky gradient behind the lander, top to horizon */
+	--sky-0: #c9d7de;
+	--sky-1: #e4ebee;
+	--sky-2: #f1efe7;
+
+	/* chart series, fixed order: direct, stock anon-rpc, Atmos (validated for CVD and contrast) */
+	--series-d: #b8741f;
+	--series-n0: #6a58c9;
+	--series-n1: #0f8a72;
+
+	--status-ok: var(--accent);
+	--status-pending: var(--ink-2);
+	--status-error: #c2412d;
+
+	--font-display: 'Bricolage Grotesque Variable', 'Bricolage Grotesque', system-ui, sans-serif;
+	--font-body: 'IBM Plex Sans', system-ui, sans-serif;
+	--font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+	--radius-sm: 8px;
+	--radius-md: 14px;
+	--radius-lg: 24px;
+
+	color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+	--paper: #0d161b;
+	--surface-0: #121e24;
+	--surface-1: #18272e;
+	--surface-2: #1b2b33;
+	--hairline: rgba(200, 230, 235, 0.1);
+
+	--ink-0: #e6eef0;
+	--ink-1: #9db0b7;
+	--ink-2: #627880;
+
+	--accent: #3fcfaa;
+	--accent-tint: #15322c;
+	--accent-soft: #24584b;
+	--accent-deep: #8de6cf;
+
+	--sky-0: #08111a;
+	--sky-1: #0f1d26;
+	--sky-2: #1a2a2c;
+
+	--series-d: #bf7a2c;
+	--series-n0: #8576e0;
+	--series-n1: #22a080;
+
+	--status-error: #ef7a62;
+
+	color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html {
+	-webkit-text-size-adjust: 100%;
+	/* Fixed, single-viewport UI: only a tile's own body scrolls. */
+	height: 100%;
+	overflow: hidden;
+	overscroll-behavior: none;
+}
+
+body {
+	margin: 0;
+	height: 100%;
+	overflow: hidden;
+	background: var(--paper);
+	color: var(--ink-0);
+	font: 400 1rem/1.65 var(--font-body);
+	-webkit-font-smoothing: antialiased;
+	text-rendering: optimizeLegibility;
+	transition: background 400ms ease;
+}
+
+a {
+	color: inherit;
+	text-decoration: none;
+}
+
+:where(button, input, textarea) {
+	font: inherit;
+	color: inherit;
+}
+
+::selection {
+	background: var(--accent-soft);
+	color: var(--ink-0);
+}
+
+* {
+	scrollbar-width: thin;
+	scrollbar-color: var(--accent-soft) transparent;
+}
+
+:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+	border-radius: var(--radius-sm);
+}
