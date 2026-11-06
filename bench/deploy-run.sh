@@ -6,8 +6,9 @@ tag=$1 job=$2 arms=$3 tasks=$4 sessions=$5; shift 5
 P=zentis-cg1-2026
 IMG=europe-west1-docker.pkg.dev/$P/atmos/bench:$tag
 cd "$(dirname "$0")/.."
-docker build -q -f bench/Dockerfile -t "$IMG" . >/dev/null
-docker push -q "$IMG" >/dev/null
+# Built on Cloud Build, so neither a local Docker nor a fast upload link is needed.
+gcloud builds submit --project $P --region europe-west1 --config bench/cloudbuild.yaml \
+  --substitutions "_TAG=$tag" --ignore-file=.dockerignore . >/dev/null
 for region in "$@"; do
   gcloud run jobs deploy "$job" --project $P --region "$region" --image "$IMG" \
     --cpu 2 --memory 4Gi --tasks "$tasks" --parallelism "$tasks" --max-retries 0 --task-timeout 240m \

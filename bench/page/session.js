@@ -123,7 +123,7 @@ const ARMS = {
       worker.close();
     }
   },
-  async N1(opts, t0, out, Worker, onReady) {
+  async N1(opts, t0, out, Worker, onReady, clientOpts = {}) {
     out.events = [];
     let client;
     try {
@@ -131,6 +131,7 @@ const ARMS = {
         bootstrapProvider: bootstrapProvider(),
         probeUrl: opts.url,
         Worker,
+        ...clientOpts,
         log: (e) => out.events.push({ at: Math.round(performance.now() - t0), ...e }),
       });
     } catch (e) {
@@ -166,6 +167,14 @@ const ARMS = {
     }, opts.minutes * 30_000);
     await ARMS.N1(opts, t0, out, StallableWorker, injectFault);
   },
+  // N1 with hedged reads: a slow read is also sent on the warm standby after a cost-optimal delay.
+  N1E: (opts, t0, out) => ARMS.N1(opts, t0, out, undefined, undefined, { hedgeLambdaMs: 250 }),
+  // N1 with planned rotation: the primary route is replaced every 1.5–2.5 minutes.
+  N1R: (opts, t0, out) => ARMS.N1(opts, t0, out, undefined, undefined, { rotateMs: 120_000 }),
+  // N1 that gives up on a silent pinned exit after 15 s instead of the tunnel's 60 s default.
+  N1T: (opts, t0, out) => ARMS.N1(opts, t0, out, undefined, undefined, { tunnel: { connectTimeoutMs: 15_000 } }),
+  // N1 with twice the default reply SURBs (10 open, 2 per packet). The exit can see these counts.
+  N1S: (opts, t0, out) => ARMS.N1(opts, t0, out, undefined, undefined, { tunnel: { openReplySurbs: 20, dataReplySurbs: 4 } }),
 };
 Object.assign(ARMS, v2Arms({ workload, bootstrapProvider }));
 

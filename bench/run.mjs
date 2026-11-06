@@ -55,7 +55,9 @@ const browser = await chromium.launch();
 console.log(JSON.stringify({ event: "start", region: REGION, arms: ARMS, sessions: SESSIONS, minutes: MINUTES, chromium: browser.version() }));
 
 for (let round = 0; round < SESSIONS; round++) {
-  for (const arm of ARMS) {
+  // Each task and round starts with a different arm, so no arm always pays the cold start.
+  const order = ARMS.map((_, i) => ARMS[(i + Number(TASK) + round) % ARMS.length]);
+  for (const arm of order) {
     const url = PROVIDERS[(Number(TASK) * SESSIONS + round) % PROVIDERS.length];
     const context = await browser.newContext();
     const page = await context.newPage();
