@@ -123,7 +123,7 @@ const ARMS = {
       worker.close();
     }
   },
-  async N1(opts, t0, out, Worker) {
+  async N1(opts, t0, out, Worker, onReady) {
     out.events = [];
     let client;
     try {
@@ -138,13 +138,14 @@ const ARMS = {
       return;
     }
     out.boot.readyMs = Math.round(performance.now() - t0);
+    onReady?.();
     try {
       await workload((url, body) => client.request(url, body), opts.url, opts.minutes, opts.rawTx, t0, out);
     } finally {
       client.close();
     }
   },
-  // N1 with a fault: halfway through, the worker that served the latest call stops answering.
+  // N1 with a fault: halfway through the workload, the worker that served the latest call stops answering.
   async N1F(opts, t0, out) {
     let last = null;
     const stalled = new WeakSet();
@@ -158,12 +159,12 @@ const ARMS = {
         };
       }
     }
-    setTimeout(() => {
+    const injectFault = () => setTimeout(() => {
       if (!last) return;
       stalled.add(last);
       out.events.push({ at: Math.round(performance.now() - t0), event: "fault-injected" });
     }, opts.minutes * 30_000);
-    await ARMS.N1(opts, t0, out, StallableWorker);
+    await ARMS.N1(opts, t0, out, StallableWorker, injectFault);
   },
 };
 Object.assign(ARMS, v2Arms({ workload, bootstrapProvider }));
@@ -178,3 +179,5 @@ window.runSession = async (opts) => {
   out.totalMs = Math.round(performance.now() - t0);
   return out;
 };
+
+export { ARMS };

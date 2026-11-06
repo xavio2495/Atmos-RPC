@@ -12,7 +12,7 @@ const SESSIONS = Number(env("SESSIONS", "6"));
 const MINUTES = Number(env("MINUTES", "10"));
 const REGION = env("REGION", "local");
 const TASK = env("CLOUD_RUN_TASK_INDEX", "0");
-const PROVIDERS = env("PROVIDERS", "https://ethereum-rpc.publicnode.com,https://rpc.mevblocker.io,https://rpc.flashbots.net").split(",");
+const PROVIDERS = env("PROVIDERS", "https://ethereum-rpc.publicnode.com,https://rpc.mevblocker.io").split(",");
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "page");
 const types = { ".html": "text/html", ".js": "text/javascript" };
@@ -48,6 +48,7 @@ function unfundedSepoliaTx() {
   return "0x02" + rlp([...fields, BigInt(sig.recovery), sig.r, sig.s]).toString("hex");
 }
 
+const node = ARMS.includes("N1H") ? await import("./node-arms.mjs") : null;
 const server = await serve();
 const base = `http://127.0.0.1:${server.address().port}/`;
 const browser = await chromium.launch();
@@ -59,10 +60,16 @@ for (let round = 0; round < SESSIONS; round++) {
     const context = await browser.newContext();
     const page = await context.newPage();
     const started = new Date().toISOString();
+    const opts = { arm, url, minutes: MINUTES, rawTx: unfundedSepoliaTx() };
     try {
-      await page.goto(base);
-      await page.waitForFunction(() => typeof window.runSession === "function");
-      const result = await page.evaluate((o) => window.runSession(o), { arm, url, minutes: MINUTES, rawTx: unfundedSepoliaTx() });
+      let result;
+      if (node?.NODE_ARMS.has(arm)) {
+        result = await node.runInNode(opts);
+      } else {
+        await page.goto(base);
+        await page.waitForFunction(() => typeof window.runSession === "function");
+        result = await page.evaluate((o) => window.runSession(o), opts);
+      }
       console.log(JSON.stringify({ event: "session", region: REGION, task: TASK, round, started, ...result }));
     } catch (e) {
       console.log(JSON.stringify({ event: "session", region: REGION, task: TASK, round, started, arm, url, error: String(e?.message ?? e).slice(0, 200) }));
