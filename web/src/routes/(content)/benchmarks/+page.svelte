@@ -1,6 +1,6 @@
 <script lang="ts">
 	import BurstChart from '#lib/components/BurstChart.svelte';
-	import { run, regions, type Arm } from '#lib/data/bench.ts';
+	import { run, regions, verified, harness, options, anonymity, type Arm, type Measured } from '#lib/data/bench.ts';
 
 	const labels = Object.fromEntries(run.arms.map((a) => [a.arm, a.label])) as Record<Arm, string>;
 	const ms = (v: number | null) =>
@@ -17,8 +17,7 @@
 <p class="lede">
 	The same wallet-shaped workload runs in each arm: plain fetch, the stock anon-rpc Nym worker,
 	Atmos v1 on top of that same worker, and Atmos with a constant-rate schedule or with verified
-	reads. Each session runs headless Chromium in a Cloud Run job, so no tab is ever throttled in the
-	background.
+	reads. Each session runs on Cloud Run, so no tab is ever throttled in the background.
 </p>
 
 {#if run.status === 'partial'}
@@ -74,9 +73,9 @@
 
 <h2>Three regions</h2>
 <p>
-	Medians per region: burst, steady p50, and share of calls answered. The verified-read arm comes
-	from a separate run with four sessions per arm; the constant-rate arm pays for its fixed slots
-	with a longer burst.
+	The headline comparison: run 2 on Cloud Run, 3 regions, 6 sessions per arm per region and
+	10-minute sessions (sessions on flashbots left out). Each cell is the burst median, then steady
+	p50 and the share of calls answered.
 </p>
 <table>
 	<thead>
@@ -85,20 +84,98 @@
 			<th class="num">Direct</th>
 			<th class="num">Stock anon-rpc</th>
 			<th class="num">Atmos v1</th>
-			<th class="num">Constant-rate</th>
-			<th class="num">Verified reads</th>
 		</tr>
 	</thead>
 	<tbody>
 		{#each regions as r (r.region)}
 			<tr>
 				<td>{r.region}</td>
-				{#each ['D', 'N0', 'N1', 'N2S', 'N2V'] as const as k (k)}
+				{#each ['D', 'N0', 'N1'] as const as k (k)}
 					{@const c = r.cells[k]}
 					<td class="num"
 						>{#if c}{ms(c[0])}<br /><small>{ms(c[1])} · {c[2]}%</small>{:else}–{/if}</td
 					>
 				{/each}
+			</tr>
+		{/each}
+	</tbody>
+</table>
+<p>
+	A stock-anon-rpc burst of 24.0 s means its median session hit the 24 s cut-off. When a route
+	stalls, Atmos switched to its standby 14.7–18.3 s later, and each session lost only the one call
+	in flight (run 4).
+</p>
+
+{#snippet measured(rows: Measured[])}
+	<table>
+		<thead>
+			<tr>
+				<th></th>
+				<th class="num">10-read burst</th>
+				<th class="num">Steady p50</th>
+				<th class="num">Steady p95</th>
+				<th class="num">Answered</th>
+			</tr>
+		</thead>
+		<tbody>
+			{#each rows as m (m.label)}
+				<tr>
+					<td>{m.label}</td>
+					<td class="num">{ms(m.burstMs)}</td>
+					<td class="num">{ms(m.p50Ms)}</td>
+					<td class="num">{ms(m.p95Ms)}</td>
+					<td class="num">{m.answeredPct}%</td>
+				</tr>
+			{/each}
+		</tbody>
+	</table>
+{/snippet}
+
+<h2>Verified reads</h2>
+<p>
+	Every read checked against a light client, in europe-west1. Refreshing the verified head on a
+	fixed clock, and reusing proofs within a block, made the burst about four times faster.
+</p>
+{@render measured(verified)}
+<p><small>{verified[1].note}</small></p>
+
+<h2>Browser or Node</h2>
+<p>
+	The same client, with the anonymity worker in headless Chromium or in Atmos's Node harness (a V8
+	isolate, no browser). Run 7 adds the pinned worker hash and the worker's host allowlist: 8 of 8
+	boots passed under both.
+</p>
+{@render measured(harness)}
+
+<h2>Optional settings</h2>
+<p>
+	Four sessions each. None beat the defaults by more than the spread between sessions, so all stay
+	off in the client; the self-hosted endpoint turns on rotation (every 10 minutes) because it limits
+	how long one route's timing lasts.
+</p>
+{@render measured(options)}
+
+<h2>What an observer can tell</h2>
+<p>
+	An observer of the self-hosted endpoint's outgoing traffic tried to tell 12-second windows of
+	wallet activity from idle ones, with the best threshold chosen with hindsight. 50% is chance.
+</p>
+<table>
+	<thead>
+		<tr>
+			<th></th>
+			<th class="num">From request count</th>
+			<th class="num">From bytes</th>
+			<th class="num">From head checks</th>
+		</tr>
+	</thead>
+	<tbody>
+		{#each anonymity as a (a.label)}
+			<tr>
+				<td>{a.label}</td>
+				<td class="num">{a.requests}%</td>
+				<td class="num">{a.bytes}%</td>
+				<td class="num">{a.beacon}%</td>
 			</tr>
 		{/each}
 	</tbody>

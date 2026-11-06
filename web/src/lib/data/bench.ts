@@ -34,7 +34,17 @@ export interface BenchRun {
 /** Medians per region: burst, steady p50, share of calls answered. */
 export interface RegionRow {
 	region: string;
-	cells: Record<'D' | 'N0' | 'N1' | 'N2S' | 'N2V', [number, number, number] | null>;
+	cells: Record<'D' | 'N0' | 'N1', [number, number, number] | null>;
+}
+
+/** One measured arm: burst, steady p50 and p95 (ms), calls answered (%). */
+export interface Measured {
+	label: string;
+	burstMs: number;
+	p50Ms: number;
+	p95Ms: number;
+	answeredPct: number;
+	note?: string;
 }
 
 export const run: BenchRun = {
@@ -56,9 +66,38 @@ export const run: BenchRun = {
 	}
 };
 
-/** Three regions; the verified-read arm comes from a separate run with 4 sessions per arm. */
+/** Run 2 (atmos-run2), 6 sessions per arm per region, flashbots sessions excluded. */
 export const regions: RegionRow[] = [
-	{ region: 'europe-west1', cells: { D: [195, 37, 100], N0: [24000, 1200, 96], N1: [2260, 746, 100], N2S: [6900, 2180, 100], N2V: [13600, 1800, 100] } },
-	{ region: 'us-east1', cells: { D: [326, 81, 100], N0: [18800, 1230, 100], N1: [3320, 826, 100], N2S: [7400, 2430, 100], N2V: [5800, 1700, 100] } },
-	{ region: 'asia-south1', cells: { D: [662, 154, 100], N0: [24000, 2140, 93], N1: [3050, 1070, 99], N2S: [7800, 2370, 100], N2V: [24000, 2300, 83] } }
+	{ region: 'europe-west1', cells: { D: [195, 37, 100], N0: [24000, 1200, 96], N1: [2260, 746, 100] } },
+	{ region: 'us-east1', cells: { D: [326, 81, 100], N0: [18800, 1230, 100], N1: [3320, 826, 100] } },
+	{ region: 'asia-south1', cells: { D: [662, 154, 100], N0: [24000, 2140, 93], N1: [3050, 1070, 99] } }
+];
+
+/** Verified reads in europe-west1, before (run 3) and after (run 6) the head clock and proof cache. */
+export const verified: Measured[] = [
+	{ label: 'Before (atmos-run3)', burstMs: 13600, p50Ms: 1770, p95Ms: 5900, answeredPct: 100 },
+	{ label: 'After (atmos-run6)', burstMs: 3550, p50Ms: 0, p95Ms: 1430, answeredPct: 100, note: 'p50 is 0 ms because most steady calls are eth_blockNumber, answered from the verified head; verified reads alone are 0.9–1.4 s.' }
+];
+
+/** Atmos v1 in the browser harness (headless Chromium) and in the Node harness, europe-west1. */
+export const harness: Measured[] = [
+	{ label: 'Chromium (atmos-run5)', burstMs: 2830, p50Ms: 522, p95Ms: 746, answeredPct: 100 },
+	{ label: 'Node harness (atmos-run5)', burstMs: 3360, p50Ms: 572, p95Ms: 759, answeredPct: 100 },
+	{ label: 'Chromium, pinned hash and allowlist (atmos-run7)', burstMs: 2550, p50Ms: 570, p95Ms: 1450, answeredPct: 100 },
+	{ label: 'Node harness, pinned hash and allowlist (atmos-run7)', burstMs: 3990, p50Ms: 656, p95Ms: 1740, answeredPct: 100 }
+];
+
+/** Optional client settings, europe-west1, 4 sessions each (atmos-run6). */
+export const options: Measured[] = [
+	{ label: 'Atmos v1, defaults', burstMs: 2610, p50Ms: 542, p95Ms: 918, answeredPct: 100 },
+	{ label: 'Hedged reads', burstMs: 2450, p50Ms: 579, p95Ms: 1013, answeredPct: 100 },
+	{ label: 'Route rotation every 2 minutes', burstMs: 2620, p50Ms: 631, p95Ms: 1077, answeredPct: 100 },
+	{ label: 'More reply SURBs', burstMs: 2400, p50Ms: 616, p95Ms: 1126, answeredPct: 100 },
+	{ label: '15 s exit connect timeout', burstMs: 2640, p50Ms: 687, p95Ms: 1074, answeredPct: 100 }
+];
+
+/** Observer accuracy (%) telling idle from busy 12 s windows of a host's outgoing traffic; 50 is chance. */
+export const anonymity = [
+	{ label: 'Shaping off', requests: 98.6, bytes: 98.6, beacon: 51.4 },
+	{ label: 'Shaping on', requests: 52.1, bytes: 60.4, beacon: 50.0 }
 ];
