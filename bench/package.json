@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "build": "NODE_PATH=node_modules esbuild page/session.js --bundle --format=esm --target=es2022 --outfile=page/dist/session.js",
-    "start": "node run.mjs"
+    "start": "node run.mjs",
+    "test": "NODE_PATH=node_modules esbuild test/atmos.test.mjs --bundle --platform=node --format=esm --log-level=error --outfile=test/dist/atmos.test.mjs && node test/dist/atmos.test.mjs"
   },
   "dependencies": {
     "@anon-rpc/browser-harness": "0.4.0",

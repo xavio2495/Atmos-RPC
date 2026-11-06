@@ -91,6 +91,7 @@ __pycache__/
 
 # Build output of the bench page bundle
 bench/page/dist/
+bench/test/dist/
 host/page/dist/
 host/dist/
 host/.bundles/

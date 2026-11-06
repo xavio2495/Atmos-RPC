@@ -20,6 +20,8 @@ const WATCHED = [
 ];
 const USDC = WATCHED[3];
 const HOLDER = "0x55FE002aefF02F77364de339a1292923A15844B8";
+// The first transaction of mainnet block 20,000,000 (status 1, 16 logs): a fixed receipt to look up.
+const RECEIPT_TX = "0xbb4b3fc2b746877dce70862850602f1d19bd890ab4db47e6b7ee1da1fe578a0d";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const rpc = (id, method, params = []) => ({ jsonrpc: "2.0", id, method, params });
@@ -56,7 +58,7 @@ async function timedCall(send, url, body, t0, log) {
     err = String(e?.message ?? e).slice(0, 80);
   }
   const end = performance.now();
-  const entry = { at: Math.round(start - t0), ms: Math.round(end - start), ok, err };
+  const entry = { at: Math.round(start - t0), ms: Math.round(end - start), ok, err, method: body.method };
   log.push(entry);
   return entry;
 }
@@ -70,6 +72,7 @@ const burstBodies = () => [
 const actionBodies = (id) => [
   rpc(id, "eth_call", [{ to: USDC, data: "0x70a08231" + HOLDER.slice(2).toLowerCase().padStart(64, "0") }, "latest"]),
   rpc(id + 1, "eth_estimateGas", [{ from: HOLDER, to: HOLDER, value: "0x0" }]),
+  rpc(id + 2, "eth_getTransactionReceipt", [RECEIPT_TX]),
 ];
 
 // Requests go out the way a wallet issues them, in parallel; the sender decides how they travel.
@@ -84,7 +87,7 @@ async function workload(send, url, minutes, rawTx, t0, out) {
   while (performance.now() < end) {
     const due = [rpc(id++, "eth_blockNumber")];
     if (tick % 3 === 0) due.push(rpc(id++, "eth_getBalance", [WATCHED[tick % WATCHED.length], "latest"]));
-    if (actionTimes.length && performance.now() >= actionTimes[0]) { actionTimes.shift(); due.push(...actionBodies(id)); id += 2; }
+    if (actionTimes.length && performance.now() >= actionTimes[0]) { actionTimes.shift(); due.push(...actionBodies(id)); id += 3; }
     const tasks = due.map((b) => timedCall(send, url, b, t0, out.steady));
     if (!writeDone && performance.now() > end - minutes * 30_000) {
       writeDone = true;
@@ -142,6 +145,7 @@ const ARMS = {
     onReady?.();
     try {
       await workload((url, body) => client.request(url, body), opts.url, opts.minutes, opts.rawTx, t0, out);
+      out.queueWaitsMs = client.stats().queueWaitsMs;
     } finally {
       client.close();
     }
@@ -172,6 +176,8 @@ const ARMS = {
   // N1 with planned rotation: the primary route is replaced every 1.5–2.5 minutes.
   N1R: (opts, t0, out) => ARMS.N1(opts, t0, out, undefined, undefined, { rotateMs: 120_000 }),
   // N1 that gives up on a silent pinned exit after 15 s instead of the tunnel's 60 s default.
+  // N1 that sends a read to the warm standby instead of queueing it behind a request in flight.
+  N1O: (opts, t0, out) => ARMS.N1(opts, t0, out, undefined, undefined, { overflow: true }),
   N1T: (opts, t0, out) => ARMS.N1(opts, t0, out, undefined, undefined, { tunnel: { connectTimeoutMs: 15_000 } }),
   // N1 with twice the default reply SURBs (10 open, 2 per packet). The exit can see these counts.
   N1S: (opts, t0, out) => ARMS.N1(opts, t0, out, undefined, undefined, { tunnel: { openReplySurbs: 20, dataReplySurbs: 4 } }),
