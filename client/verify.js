@@ -236,13 +236,21 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
           return { number: Number(b.number), stateRoot: b.stateRoot, hash: b.hash };
         })
       : { number: Number(h.execution.block_number), stateRoot: h.execution.state_root, hash: h.execution.block_hash };
+    next.time = chain.genesisTime + Number(h.beacon.slot) * 12;
     if (!head || next.number > head.number) head = next;
     headAt = Date.now();
   }
   const currentHead = async () => {
     if (!head || Date.now() - headAt > HEAD_REFRESH_MS) {
       refreshing ??= refreshHead().finally(() => { refreshing = null; });
-      await refreshing;
+      try {
+        await refreshing;
+      } catch (e) {
+        // A rejected update must not stop reads while the last verified head is
+        // still recent: keep it, and try a fresh update on the next read.
+        if (!head || Date.now() / 1000 - head.time > MAX_HEAD_AGE_S) throw e;
+        log({ event: "head-rejected", reason: String(e?.message ?? e).slice(0, 80) });
+      }
     }
     return head;
   };
