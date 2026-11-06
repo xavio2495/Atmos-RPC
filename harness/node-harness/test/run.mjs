@@ -241,6 +241,9 @@ const hostile = await interrogate(
   // The raw bridge the platform is built on was deleted from the global.
   out.bridge = ["__host_send","__host_request","__host_random","__host_url"]
     .map((n) => typeof globalThis[n]).join(",");
+  // Entropy: a full 65,536-byte draw is random to its end; a larger one throws.
+  out.randFull = crypto.getRandomValues(new Uint8Array(65536)).subarray(-4096).some((b) => b !== 0);
+  try { crypto.getRandomValues(new Uint8Array(65537)); out.randOver = "returned"; } catch (e) { out.randOver = e.name; }
   anonRpcWorker.signalReady();
   for (;;) {
     const call = await anonRpcWorker.acceptCall();
@@ -257,6 +260,8 @@ if (hostile.viaCapability !== "undefined" || hostile.viaConsole !== "undefined")
   fail(`the realm escape WORKED: ${JSON.stringify(hostile)}`);
 }
 if (!hostile.ctorIsOurs) fail(`a host function's constructor is foreign: ${JSON.stringify(hostile)}`);
+if (!hostile.randFull) fail(`the tail of a 65,536-byte random draw is zero: ${JSON.stringify(hostile)}`);
+if (hostile.randOver !== "QuotaExceededError") fail(`a random draw over 65,536 bytes did not throw: ${hostile.randOver}`);
 if (hostile.import === "GOT node:fs") fail(`the guest imported node:fs: ${JSON.stringify(hostile)}`);
 if (hostile.bridge !== "undefined,undefined,undefined,undefined") {
   fail(`the raw host bridge is reachable: ${hostile.bridge}`);

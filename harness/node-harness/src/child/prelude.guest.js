@@ -721,6 +721,9 @@
   const cryptoObj = {
     getRandomValues(view) {
       if (!ArrayBuffer.isView(view)) throw new TypeError("getRandomValues: not a TypedArray");
+      // The host caps one draw at 65,536 bytes, as the Web Crypto API does; a larger
+      // view must throw, never come back only partly random.
+      if (view.byteLength > 65536) throw new DOMException("getRandomValues: more than 65536 bytes", "QuotaExceededError");
       const bytes = new Uint8Array(hostRandom(view.byteLength));
       new Uint8Array(view.buffer, view.byteOffset, view.byteLength).set(bytes);
       return view;
