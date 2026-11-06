@@ -44,7 +44,7 @@ ATMOS_CHECKPOINT=0x… npm start
 
 Point the wallet at `http://127.0.0.1:8545/11155111` as an RPC URL for Sepolia. `GET /` reports whether the host is ready and how many answers were verified. In a 5-minute wallet-style session the host answered 73 of 73 calls, 69 of them proof-checked.
 
-The worker runs in the Node harness by default. `ATMOS_RUNTIME=chromium` runs it in anon-rpc's browser harness instead (`npx playwright install chromium` first). `ATMOS_SHAPE=1` sends every call on a constant-rate, padded schedule, at a latency cost. Docker: `docker build -f host/Dockerfile.node -t atmos-host .`
+The worker runs in the Node harness by default. `ATMOS_RUNTIME=chromium` runs it in anon-rpc's browser harness instead (`npx playwright install chromium` first). `ATMOS_SHAPE=1` sends every call on a constant-rate, padded schedule, at a latency cost. The host answers only on a loopback name and to wallet extensions; `ATMOS_PUBLIC=1` opens it to any host name and origin. Docker: `docker build -f host/Dockerfile.node -t atmos-host .`
 
 ## Using the client directly
 

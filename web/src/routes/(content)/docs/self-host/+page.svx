@@ -33,11 +33,11 @@ With Docker, from the repository root:
 ```sh
 # Node runtime (default)
 docker build -f host/Dockerfile.node -t atmos-host .
-docker run -p 8545:8545 -e ATMOS_CHECKPOINT=0x… atmos-host
+docker run -p 127.0.0.1:8545:8545 -e ATMOS_CHECKPOINT=0x… atmos-host
 
 # Chromium runtime
 docker build -f host/Dockerfile -t atmos-host:chromium .
-docker run -p 8545:8545 -e ATMOS_RUNTIME=chromium -e ATMOS_CHECKPOINT=0x… atmos-host:chromium
+docker run -p 127.0.0.1:8545:8545 -e ATMOS_RUNTIME=chromium -e ATMOS_CHECKPOINT=0x… atmos-host:chromium
 ```
 
 From source, with Node 24 or later:
@@ -50,6 +50,8 @@ npx playwright install chromium                     # Chromium runtime only
 npm run build
 ATMOS_CHECKPOINT=0x… npm start                       # or ATMOS_RUNTIME=chromium …
 ```
+
+The host is yours alone by default. It answers only at `127.0.0.1` or `localhost`, and only to wallet extensions and clients that send no browser origin, so websites you visit can't use it or tell that it is running. List extra browser origins in `ATMOS_ORIGINS` (comma-separated). An open host for others sets `ATMOS_PUBLIC=1`, which accepts any host name and origin. Request bodies are capped at 4 MiB.
 
 The host waits for a working route before it answers, which takes from about 15 seconds to two minutes. `GET /` reports the runtime, whether it is ready, and counts answers by kind.
 
