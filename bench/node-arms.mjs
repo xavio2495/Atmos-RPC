@@ -15,6 +15,8 @@ class NymWorker extends AnonRpcWorker {
 }
 
 ARMS.N1H = (opts, t0, out) => ARMS.N1(opts, t0, out, NymWorker);
+// Verified reads configured as atmos-host runs them: the Node harness and 10-minute route rotation.
+ARMS.N2VH = (opts, t0, out) => ARMS.N2V(opts, t0, out, { Worker: NymWorker, rotateMs: 600_000 });
 
-export const NODE_ARMS = new Set(["N1H"]);
+export const NODE_ARMS = new Set(["N1H", "N2VH"]);
 export const runInNode = (opts) => window.runSession(opts);

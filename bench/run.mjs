@@ -48,7 +48,7 @@ function unfundedSepoliaTx() {
   return "0x02" + rlp([...fields, BigInt(sig.recovery), sig.r, sig.s]).toString("hex");
 }
 
-const node = ARMS.includes("N1H") ? await import("./node-arms.mjs") : null;
+const node = ARMS.some((a) => a === "N1H" || a === "N2VH") ? await import("./node-arms.mjs") : null;
 const server = await serve();
 const base = `http://127.0.0.1:${server.address().port}/`;
 const browser = await chromium.launch();
