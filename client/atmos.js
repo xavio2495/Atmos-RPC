@@ -1,7 +1,10 @@
 import { AnonRpcWorker } from "@anon-rpc/browser-harness";
 
-const NYM_SPECIFIER = "0x3aCD9742C68F6d993066Ae25533e09b9e1f60eD0";
-const NYM_API = "https://validator.nymtech.net/api/v1";
+export const NYM_SPECIFIER = "0x3aCD9742C68F6d993066Ae25533e09b9e1f60eD0";
+// What the Nym worker needs from a harness that sets limits: about 1 GiB for its wasm, and its
+// longest synchronous step measured 1.0–1.4 s (the first evaluation).
+export const NYM_WORKER_LIMITS = { memoryBytes: 1 << 30, deadlineMs: 10_000 };
+const NYM_APIS = ["https://validator.nymtech.net/api/v1"];
 // The Nym worker bundle this client runs, pinned like Subresource Integrity. Moving to a new
 // worker version is a client release, not a change any RPC provider or specifier owner can make.
 const NYM_WORKER_HASH = "0xf13a448a8721b9d0b20da3d5b80ffe00bf4c5bb3aae812a38d3d1e3bc81fceb8";
@@ -22,7 +25,8 @@ const PROBE_TIMEOUT_MS = 24_000;
 const ATTEMPT_TIMEOUT_MS = 8_000;
 // The first request a route makes to a host also pays DNS, TCP and TLS through the mixnet.
 const FIRST_CONTACT_TIMEOUT_MS = 30_000;
-const MAX_BATCH = { "eth.drpc.org": 3, "rpc.flashbots.net": 5 };
+// Known batch caps; any other provider's cap is learned from its first refusal.
+const KNOWN_BATCH_CAPS = { "eth.drpc.org": 3, "rpc.flashbots.net": 5 };
 // A replaced route stays open this long so requests already in flight on it can finish.
 const RETIRE_GRACE_MS = 30_000;
 const DEFAULT_MAX_BATCH = 10;
@@ -30,10 +34,17 @@ const DEFAULT_MAX_BATCH = 10;
 const HEDGE_DELAYS_MS = [250, 500, 750, 1000, 1500, 2000, 3000];
 const HEDGE_WINDOW = 50;
 const HEDGE_MIN_SAMPLES = 20;
+// A standby that failed to boot is tried again after this long.
+const STANDBY_RETRY_MS = 5_000;
+const MAX_QUEUE_WAIT_SAMPLES = 1_000;
+const MIN_BAND = 6;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const withTimeout = (p, ms, what) =>
-  Promise.race([p, sleep(ms).then(() => { throw new Error(`${what} timeout`); })]);
+function withTimeout(p, ms, what) {
+  let timer;
+  const expiry = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} timeout`)), ms); });
+  return Promise.race([p, expiry]).finally(() => clearTimeout(timer));
+}
 const random = () => crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32;
 const pick = (arr) => arr[crypto.getRandomValues(new Uint32Array(1))[0] % arr.length];
 const shuffle = (arr) => {
@@ -45,9 +56,17 @@ const shuffle = (arr) => {
   return a;
 };
 
-async function nymList(path) {
-  const j = await (await fetch(NYM_API + path)).json();
+async function nymList(api, path) {
+  const j = await (await fetch(api + path)).json();
   return Array.isArray(j) ? j : (j.nodes?.data ?? j.data);
+}
+
+// The top performance band, or the best fifth of the list if the band is too small to choose from.
+function band(nodes, eligible) {
+  const ok = nodes.filter(eligible);
+  const top = ok.filter((n) => Number(n.performance) >= 0.99);
+  if (top.length >= MIN_BAND) return top;
+  return ok.sort((a, b) => Number(b.performance) - Number(a.performance)).slice(0, Math.max(MIN_BAND, Math.ceil(ok.length / 5)));
 }
 
 function abiStringArray(strs) {
@@ -77,19 +96,27 @@ function pinSpecifier(provider, address, hash, resolvers) {
   };
 }
 
-// Entry gateways and IPR exits from the public directory, filtered to the
-// top performance band. Choosing uniformly inside the band uses no client data.
-async function loadBand() {
-  const [entries, exits, described] = await Promise.all([
-    nymList("/unstable/nym-nodes/skimmed/entry-gateways/all"),
-    nymList("/unstable/nym-nodes/skimmed/exit-gateways/all"),
-    nymList("/nym-nodes/described"),
-  ]);
-  const ipr = new Map(described.map((d) => [d.node_id, d.description?.ip_packet_router?.address]));
-  return {
-    entries: entries.filter((g) => Number(g.performance) >= 0.99 && g.entry?.wss_port && g.entry?.hostname),
-    exits: exits.filter((x) => Number(x.performance) >= 0.99 && ipr.get(x.node_id)).map((x) => ipr.get(x.node_id)),
-  };
+// Entry gateways and IPR exits from the public directory (the first API that answers), filtered
+// to the top performance band. Choosing uniformly inside the band uses no client data.
+async function loadBand(apis) {
+  let last;
+  for (const api of apis) {
+    try {
+      const [entries, exits, described] = await Promise.all([
+        nymList(api, "/unstable/nym-nodes/skimmed/entry-gateways/all"),
+        nymList(api, "/unstable/nym-nodes/skimmed/exit-gateways/all"),
+        nymList(api, "/nym-nodes/described"),
+      ]);
+      const ipr = new Map(described.map((d) => [d.node_id, d.description?.ip_packet_router?.address]));
+      return {
+        apiHost: new URL(api).hostname,
+        entries: band(entries, (g) => g.entry?.wss_port && g.entry?.hostname),
+        exits: band(exits, (x) => ipr.get(x.node_id)).map((x) => ipr.get(x.node_id)),
+        loadedAt: Date.now(),
+      };
+    } catch (e) { last = e; }
+  }
+  throw last;
 }
 
 function gatewayAnswers(g) {
@@ -118,10 +145,13 @@ async function postJson(worker, url, body, padBytes = 0) {
 // One Nym worker plus a per-origin queue: at most one request in flight per
 // origin, with everything that queued meanwhile sent as one JSON-RPC batch.
 class Route {
-  constructor(worker, padBytes = 0, onWait = () => {}) {
+  constructor(worker, { padBytes = 0, onWait = () => {}, caps = {}, exit = null, release = () => {} } = {}) {
     this.worker = worker;
     this.padBytes = padBytes;
     this.onWait = onWait;
+    this.caps = caps;
+    this.exit = exit;
+    this.release = release;
     this.queues = new Map();
     this.chains = new Map();
     this.warm = new Set();
@@ -150,8 +180,8 @@ class Route {
   async #drain(url, q) {
     if (q.busy || q.pending.length === 0) return;
     q.busy = true;
-    const max = MAX_BATCH[new URL(url).host] ?? DEFAULT_MAX_BATCH;
-    const items = q.pending.splice(0, max);
+    const host = new URL(url).host;
+    const items = q.pending.splice(0, this.caps[host] ?? DEFAULT_MAX_BATCH);
     const now = performance.now();
     items.forEach((it) => this.onWait(now - it.at));
     try {
@@ -160,6 +190,12 @@ class Route {
       } else {
         const ids = items.map((_, i) => i + 1);
         const reply = await postJson(this.worker, url, items.map((it, i) => ({ ...it.body, id: ids[i] })), this.padBytes);
+        // A batch refused for its size means the provider caps batches: learn a smaller cap, resend.
+        if (!Array.isArray(reply) && (reply?.error?.code === -32014 || /batch/i.test(reply?.error?.message ?? ""))) {
+          this.caps[host] = Math.max(1, Math.floor(items.length / 2));
+          q.pending.unshift(...items);
+          return;
+        }
         const byId = new Map((Array.isArray(reply) ? reply : []).map((r) => [r.id, r]));
         items.forEach((it, i) => {
           const r = byId.get(ids[i]);
@@ -177,7 +213,10 @@ class Route {
 
   busy(url) { return this.queues.get(url)?.busy ?? false; }
 
-  close() { this.worker.close(); }
+  close() {
+    this.worker.close();
+    this.release();
+  }
 }
 
 // Cost-optimal hedge delay: the d that minimises mean(min(x, d + y)) + lambda * P(x > d) over recent
@@ -198,31 +237,44 @@ function hedgeDelay(latencies, lambdaMs) {
   return best;
 }
 
-// hedgeLambdaMs: when set, a slow read is also sent on the warm standby (a second exit sees it);
-//   larger values hedge less. rotateMs: when set, the primary route is replaced about this often,
-//   so no route stays long enough to become a timing fingerprint. tunnel: extra options for the
-//   worker's mix tunnel (e.g. connectTimeoutMs); options the exit can observe make the client stand out.
-//   padBytes: pad every JSON-RPC request body to a multiple of this many bytes.
-//   workerHash, workerResolvers: the worker bundle to run and where to fetch it (default: the
-//   pinned Nym worker). With a custom hash and no resolvers, the resolvers are read from the specifier.
-//   overflow: a read that would queue behind a request in flight goes to the warm standby instead
-//   (a second exit sees it).
-export async function createAtmosClient({ overflow = false, bootstrapProvider, probeUrl, log = () => {}, Worker = AnonRpcWorker, hedgeLambdaMs = null, rotateMs = null, tunnel = {}, padBytes = 0,
-  workerHash = NYM_WORKER_HASH, workerResolvers = workerHash === NYM_WORKER_HASH ? NYM_WORKER_RESOLVERS : null }) {
-  const band = await loadBand();
-  const queueWaits = [];
+// Options (all optional except bootstrapProvider and probeUrl):
+//   hedgeLambdaMs: a slow read is also sent on the warm standby (a second exit sees it); larger
+//     values hedge less. rotateMs: replace the primary route about this often, so no route lasts
+//     long enough to become a timing fingerprint. overflow: a read that would queue behind a request
+//     in flight goes to the warm standby instead (a second exit sees it).
+//   tunnel: extra options for the worker's mix tunnel; options the exit can observe make the client
+//     stand out. padBytes: pad every JSON-RPC request body to a multiple of this many bytes.
+//   workerHash, workerResolvers: the worker bundle to run and where to fetch it (default: the pinned
+//     Nym worker); with a custom hash and no resolvers, the resolvers are read from the specifier.
+//   nymApis: Nym directory APIs, tried in order. specifierRpc: the mainnet provider the specifier
+//     change-check asks, through the mixnet.
+export async function createAtmosClient({
+  bootstrapProvider, probeUrl, log = () => {}, Worker = AnonRpcWorker,
+  hedgeLambdaMs = null, rotateMs = null, overflow = false, tunnel = {}, padBytes = 0,
+  workerHash = NYM_WORKER_HASH, workerResolvers = workerHash === NYM_WORKER_HASH ? NYM_WORKER_RESOLVERS : null,
+  nymApis = NYM_APIS, specifierRpc = SPECIFIER_RPC,
+}) {
+  if (Array.isArray(nymApis) === false || nymApis.length === 0) throw new TypeError("nymApis must be a non-empty list");
+  let directory = await loadBand(nymApis);
   const rpcProvider = pinSpecifier(bootstrapProvider, NYM_SPECIFIER, workerHash, workerResolvers);
-  const usedExits = new Set();
+  const caps = { ...KNOWN_BATCH_CAPS };
+  const queueWaits = [];
+  const recordWait = (ms) => { queueWaits.push(Math.round(ms)); if (queueWaits.length > MAX_QUEUE_WAIT_SAMPLES) queueWaits.shift(); };
+  // Exits of routes that are booting or alive; a new route takes any other exit in the band.
+  const exitsInUse = new Set();
+  let closed = false;
 
   async function bootRoute() {
-    for (let attempt = 0; attempt < 4; attempt++) {
+    for (let attempt = 0; attempt < 4 && !closed; attempt++) {
+      if (Date.now() - directory.loadedAt > 3_600_000) directory = await loadBand(nymApis).catch(() => directory);
       let entry = null;
-      for (const g of shuffle(band.entries).slice(0, 6)) {
+      for (const g of shuffle(directory.entries).slice(0, 6)) {
         if (await gatewayAnswers(g)) { entry = g; break; }
       }
-      const exit = pick(band.exits.filter((x) => !usedExits.has(x)));
+      const exit = pick(directory.exits.filter((x) => !exitsInUse.has(x)));
       if (!entry || !exit) continue;
-      usedExits.add(exit);
+      exitsInUse.add(exit);
+      const release = () => exitsInUse.delete(exit);
       const worker = new Worker({
         address: NYM_SPECIFIER,
         // A pinned exit that hasn't answered the handshake in 15 s is dropped (the tunnel's default
@@ -232,11 +284,11 @@ export async function createAtmosClient({ overflow = false, bootstrapProvider, p
         expectedHash: workerHash,
         // On harnesses that bridge the network (the Atmos Node harness), the worker may reach only
         // the Nym directory and its own entry gateway; everything else goes through the mixnet.
-        network: { policy: { hosts: [new URL(NYM_API).hostname, entry.entry.hostname] } },
+        network: { policy: { hosts: [directory.apiHost, entry.entry.hostname] } },
       });
       try {
         await withTimeout(worker.ready, BOOT_TIMEOUT_MS, "boot");
-        const route = new Route(worker, padBytes, (ms) => queueWaits.push(Math.round(ms)));
+        const route = new Route(worker, { padBytes, onWait: recordWait, caps, exit, release });
         for (let probe = 0; probe < 2; probe++) {
           try {
             const r = await withTimeout(route.send(probeUrl, { jsonrpc: "2.0", id: 0, method: "eth_chainId", params: [] }), PROBE_TIMEOUT_MS, "probe");
@@ -252,9 +304,10 @@ export async function createAtmosClient({ overflow = false, bootstrapProvider, p
         const reason = String(e?.message ?? e);
         log({ event: "route-rejected", attempt, reason });
         // A boot that failed fast (e.g. every bundle mirror unreachable) is retried after a pause, not at once.
-        if (reason !== "boot timeout") { worker.close(); await sleep(2_000 * 2 ** attempt); continue; }
+        if (reason !== "boot timeout") { worker.close(); release(); await sleep(2_000 * 2 ** attempt); continue; }
       }
       worker.close();
+      release();
     }
     throw new Error("no working route");
   }
@@ -262,6 +315,7 @@ export async function createAtmosClient({ overflow = false, bootstrapProvider, p
   let primary = await bootRoute();
   let secondary = null;
   let replacing = null;
+  let standbyRetry = null;
   const retiring = new Set();
   const retire = (route) => {
     retiring.add(route);
@@ -273,27 +327,41 @@ export async function createAtmosClient({ overflow = false, bootstrapProvider, p
   const warmUp = (route) => Promise.all([...usedOrigins].filter((o) => !route.warm.has(o)).map((o) =>
     withTimeout(route.fetch(o + "/", { method: "HEAD" }), FIRST_CONTACT_TIMEOUT_MS, "warm-up")
       .then(() => route.warm.add(o), () => {})));
-  const ensureSecondary = () => {
-    if (secondary || replacing) return;
+  // Keep one warm standby; a boot that fails is tried again later, so failover and rotation recover.
+  function ensureSecondary() {
+    if (closed || secondary || replacing) return;
     replacing = bootRoute()
-      .then(async (r) => { await warmUp(r); secondary = r; })
-      .catch(() => {})
+      .then(async (r) => {
+        await warmUp(r);
+        if (closed) r.close();
+        else secondary = r;
+      })
+      .catch(() => { if (!closed) standbyRetry = setTimeout(ensureSecondary, STANDBY_RETRY_MS); })
       .finally(() => { replacing = null; });
-  };
+  }
   ensureSecondary();
+  // Resolves when a standby is ready, or after ms.
+  async function standbyReady(ms) {
+    const until = performance.now() + ms;
+    while (!secondary && !closed && performance.now() < until) await sleep(250);
+    return secondary;
+  }
+  function promote() {
+    const old = primary;
+    primary = secondary;
+    secondary = null;
+    retire(old);
+    ensureSecondary();
+  }
 
   let rotation = null;
   const scheduleRotation = () => {
-    if (rotateMs) rotation = setTimeout(rotate, rotateMs * (0.75 + 0.5 * random()));
+    if (rotateMs && !closed) rotation = setTimeout(rotate, rotateMs * (0.75 + 0.5 * random()));
   };
   function rotate() {
     if (secondary) {
       log({ event: "rotate" });
-      const old = primary;
-      primary = secondary;
-      secondary = null;
-      retire(old);
-      ensureSecondary();
+      promote();
     }
     scheduleRotation();
   }
@@ -331,21 +399,21 @@ export async function createAtmosClient({ overflow = false, bootstrapProvider, p
     });
   }
 
+  // Concurrent sends of the same signed transaction share one request. A write that stalls is
+  // resent on the standby: the same raw transaction has the same hash, so a second copy is harmless.
   const inflightWrites = new Map();
 
   async function request(url, body) {
-    if (body.method === "eth_sendRawTransaction") {
-      usedOrigins.add(new URL(url).origin);
-      const key = body.params?.[0];
-      if (!inflightWrites.has(key)) {
-        inflightWrites.set(key, primary.send(url, body).finally(() => inflightWrites.delete(key)));
-      }
-      return inflightWrites.get(key);
+    if (Array.isArray(body)) throw new TypeError("send JSON-RPC calls one at a time; batching is automatic");
+    if (body.method !== "eth_sendRawTransaction") return withFailover(url, (route) => route.send(url, body));
+    const key = body.params?.[0];
+    if (!inflightWrites.has(key)) {
+      inflightWrites.set(key, withFailover(url, (route) => route.send(url, body), { hedge: false }).finally(() => inflightWrites.delete(key)));
     }
-    return withFailover(url, (route) => route.send(url, body));
+    return inflightWrites.get(key);
   }
 
-  async function withFailover(url, attempt) {
+  async function withFailover(url, attempt, { hedge = true } = {}) {
     const origin = new URL(url).origin;
     let route = primary;
     if (overflow && primary.busy(url) && secondary?.warm.has(origin) && !secondary.busy(url)) {
@@ -359,38 +427,46 @@ export async function createAtmosClient({ overflow = false, bootstrapProvider, p
     if (warm) pending.then(() => { latencies.push(performance.now() - start); if (latencies.length > HEDGE_WINDOW) latencies.shift(); }, () => {});
     try {
       const timeout = warm ? ATTEMPT_TIMEOUT_MS : FIRST_CONTACT_TIMEOUT_MS;
-      const result = await withTimeout(hedged(route, origin, pending, attempt), timeout, "attempt");
+      const result = await withTimeout(hedge ? hedged(route, origin, pending, attempt) : pending, timeout, "attempt");
       route.warm.add(origin);
       return result;
     } catch (e) {
       if (route !== primary) return attempt(primary);
       // A fast error means the provider dropped the connection, not that the route stalled.
       if (e?.message !== "attempt timeout") return attempt(route);
-      // No standby to switch to: a slow route is still better than an error.
-      if (!secondary) return pending;
+      if (!secondary) {
+        // No standby yet: take the stalled route's answer if it comes, or move once a standby is ready.
+        ensureSecondary();
+        const first = await Promise.race([
+          pending.then((r) => ({ r }), (err) => ({ err })),
+          standbyReady(BOOT_TIMEOUT_MS).then(() => null),
+        ]);
+        if (first) { if ("err" in first) throw first.err; return first.r; }
+        if (route !== primary) return attempt(primary);
+        if (!secondary) throw new Error("no route answered");
+      }
       log({ event: "failover" });
-      const failed = primary;
-      primary = secondary;
-      secondary = null;
-      retire(failed);
-      ensureSecondary();
+      promote();
       return attempt(primary);
     }
   }
 
-  // Learn, through the mixnet, when the specifier has moved past the pinned worker.
-  request(SPECIFIER_RPC, { jsonrpc: "2.0", id: 0, method: "eth_call", params: [{ to: NYM_SPECIFIER, data: SEL_WORKER_HASH }, "latest"] })
+  // Learn, through the mixnet, when the specifier has moved past the pinned worker. Sent on the
+  // primary directly, so the mainnet provider doesn't join the origins every standby warms.
+  withTimeout(primary.send(specifierRpc, { jsonrpc: "2.0", id: 0, method: "eth_call", params: [{ to: NYM_SPECIFIER, data: SEL_WORKER_HASH }, "latest"] }), FIRST_CONTACT_TIMEOUT_MS, "specifier check")
     .then((r) => {
       if (typeof r?.result === "string" && r.result.toLowerCase() !== workerHash.toLowerCase()) log({ event: "specifier-changed", live: r.result });
     }, () => {});
 
   return {
     request,
-    // Milliseconds each JSON-RPC call spent queued behind a request in flight on its route.
+    // Milliseconds each JSON-RPC call spent queued behind a request in flight on its route (the last 1,000).
     stats: () => ({ queueWaitsMs: [...queueWaits] }),
     fetch: (url, init) => withFailover(url, (route) => route.fetch(url, init)),
     close() {
+      closed = true;
       clearTimeout(rotation);
+      clearTimeout(standbyRetry);
       primary.close();
       secondary?.close();
       retiring.forEach((r) => r.close());
