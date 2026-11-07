@@ -105,7 +105,7 @@ lying.close(); forged?.close?.();
   let proofs = 0;
   const events = [];
   const counting = (u, b) => { if (b.method === "eth_getProof") proofs++; return post(u, b); };
-  const r = await createVerifiedReader({ request: counting, beaconGet: get, checkpoint, providers: [U], chain: SEPOLIA, accessLists: [BAL], log: (e) => events.push(e) });
+  const r = await createVerifiedReader({ request: counting, beaconGet: get, checkpoint, providers: [U], chain: SEPOLIA, accessLists: [BAL], listParallel: 2, log: (e) => events.push(e) });
   // Busy accounts: the ones whose balance changed most in a recent block.
   const recent = (await post(BAL, { jsonrpc: "2.0", id: 1, method: "eth_getBlockAccessList", params: ["latest"] })).result;
   const busy = recent.filter((a) => a.balanceChanges.length).sort((a, b) => b.balanceChanges.length - a.balanceChanges.length).slice(0, 5).map((a) => a.address);

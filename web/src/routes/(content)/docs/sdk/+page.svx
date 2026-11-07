@@ -31,7 +31,7 @@ The first call waits for the provider to start: 15 to 70 seconds while the worke
 | Option | Default | What it does | What it costs |
 |---|---|---|---|
 | `checkpoint` | finalized root two beacon APIs agree on | the light client's trust anchor (a beacon block root) | pass your own to avoid trusting the beacon APIs on first use |
-| `bal` | `false` | keeps accounts you have read current from each block's EIP-7928 access list, verified against the header, so reading them again names nothing to a provider | one list per block (70–160 KB, 3–9 s through Nym); Sepolia only |
+| `bal` | `false` | keeps accounts you have read current from each block's EIP-7928 access list, verified against the header, so reading them again names nothing to a provider | one list per block (70–160 KB), on two extra mixnet routes of its own so the wallet's calls never wait; about a minute to catch up after start. Once following, repeat reads take ~10 ms. Sepolia only |
 | `shape` | `false` | every call leaves on a fixed clock, padded, with dummies in the gaps | about one slot per call: up to 4 s for reads, 8 s for proofs |
 | `prefetch` | `false` | re-proves recent reads at each new block and answers repeats at once | extra traffic on every block |
 | `log` | none | called with each internal event (`checkpoint`, `route-accepted`, …) | |

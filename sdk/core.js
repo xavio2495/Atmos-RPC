@@ -116,6 +116,8 @@ export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false
       probeUrl: PROVIDERS[0],
       log,
       rotateMs: 10 * 60_000,
+      // Access lists get two bulk lanes of their own, fetched alternately.
+      ...(bal ? { bulkLanes: 2 } : {}),
       ...(Worker ? { Worker } : {}),
       ...(shape ? { padBytes: 2048 } : {}),
     });
@@ -140,6 +142,7 @@ export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false
       // Access lists are large, public and the same for everyone: they go on the client's
       // bulk lane (its own route), unshaped, so they never hold up the wallet's calls.
       listRequest: traced(client.bulk, (body) => ({ calls: 1, bytes: JSON.stringify(body).length, bulk: true })),
+      listParallel: 2,
       log,
     });
     if (closed) close();

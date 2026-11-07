@@ -210,7 +210,7 @@ function trieGet(root, key, proof) {
 // `accessLists`: providers serving EIP-7928 access lists. When given, proven accounts
 // are kept current from every block's verified list, so repeat reads name nothing.
 // `listRequest`: the transport for those lists (large replies), by default `request`.
-export async function createVerifiedReader({ request, beaconGet, checkpoint, providers, chain = MAINNET, split = false, accessLists = null, listRequest = request, log = () => {} }) {
+export async function createVerifiedReader({ request, beaconGet, checkpoint, providers, chain = MAINNET, split = false, accessLists = null, listRequest = request, listParallel = 1, log = () => {} }) {
   // The first beacon request on a new route can fail in transit, which is not the
   // same as the checkpoint being unknown, so it is tried a few times.
   let boot, last;
@@ -299,6 +299,7 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
           }
         },
         maxGap: MAX_HEADER_WALK,
+        parallel: listParallel,
         log,
       })
     : null;

@@ -33,8 +33,9 @@ export function accessListHash(list) {
 // request for everyone. `headerAt(n)` returns a verified header; `fetchList(hash)`
 // returns that block's access list as JSON, which must hash to the header's commitment.
 // Each account records the block its values hold at. A gap longer than `maxGap`
-// blocks empties the set, since its headers can't be walked.
-export function createAccessListFollower({ headerAt, fetchList, maxGap, log = () => {} }) {
+// blocks empties the set, since its headers can't be walked. Up to `parallel` lists
+// are fetched at once (one per bulk lane) and applied in block order.
+export function createAccessListFollower({ headerAt, fetchList, maxGap, parallel = 1, log = () => {} }) {
   const accounts = new Map();
   let at = -1;
   let advancing = null;
@@ -67,12 +68,17 @@ export function createAccessListFollower({ headerAt, fetchList, maxGap, log = ()
       at = n;
       return;
     }
+    const load = (b) => headerAt(b).then(async (header) => ({ header, list: await fetchList(header.hash) }));
     while (at < n) {
-      const header = await headerAt(at + 1);
-      const list = await fetchList(header.hash);
-      if (accessListHash(list) !== header.blockAccessListHash?.toLowerCase()) throw new Error("access list does not match header");
-      apply(list, at + 1);
-      at++;
+      const batch = [];
+      for (let b = at + 1; b <= Math.min(n, at + parallel); b++) batch.push(load(b));
+      batch.forEach((p) => p.catch(() => {}));
+      for (const p of batch) {
+        const { header, list } = await p;
+        if (accessListHash(list) !== header.blockAccessListHash?.toLowerCase()) throw new Error("access list does not match header");
+        apply(list, at + 1);
+        at++;
+      }
     }
   }
 
