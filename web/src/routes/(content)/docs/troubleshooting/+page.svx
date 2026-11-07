@@ -2,7 +2,6 @@
 	<title>Troubleshooting · Atmos docs</title>
 </svelte:head>
 
-<span class="eyebrow">Docs · Help</span>
 
 # Troubleshooting
 

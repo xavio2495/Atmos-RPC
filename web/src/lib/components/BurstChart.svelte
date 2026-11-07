@@ -133,7 +133,7 @@
 		margin-bottom: 14px;
 	}
 	.title {
-		font: 600 0.92rem/1.3 var(--font-display);
+		font: 600 0.92rem/1.3 var(--font-body);
 		color: var(--ink-0);
 	}
 	.legend {
@@ -143,7 +143,7 @@
 		margin: 0;
 		padding: 0;
 		list-style: none;
-		font: 400 0.74rem/1.4 var(--font-mono);
+		font: 400 0.74rem/1.4 var(--font-body);
 		color: var(--ink-1);
 	}
 	.swatch {
@@ -172,7 +172,7 @@
 		position: absolute;
 		bottom: 0;
 		transform: translateX(-50%);
-		font: normal 400 0.66rem/1 var(--font-mono);
+		font: normal 400 0.66rem/1 var(--font-body);
 		color: var(--ink-2);
 	}
 	.row {
@@ -185,7 +185,7 @@
 	.idx {
 		width: 26px;
 		flex: none;
-		font: 400 0.66rem/1 var(--font-mono);
+		font: 400 0.66rem/1 var(--font-body);
 		color: var(--ink-2);
 	}
 	.bars {
@@ -216,7 +216,7 @@
 		position: absolute;
 		top: 50%;
 		transform: translate(6px, -50%);
-		font: 500 0.7rem/1 var(--font-mono);
+		font: 500 0.7rem/1 var(--font-body);
 		color: var(--ink-0);
 		white-space: nowrap;
 	}
@@ -228,16 +228,14 @@
 		background: var(--ink-0);
 		color: var(--surface-0);
 		border-radius: 6px;
-		font: 400 0.72rem/1.3 var(--font-mono);
+		font: 400 0.72rem/1.3 var(--font-body);
 		white-space: nowrap;
 		pointer-events: none;
 	}
 	.table summary {
 		margin-top: 8px;
 		cursor: pointer;
-		font: 500 0.7rem/1 var(--font-mono);
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
+		font: 600 0.78rem/1 var(--font-body);
 		color: var(--ink-1);
 	}
 	.table table {

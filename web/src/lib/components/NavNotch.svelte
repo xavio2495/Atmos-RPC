@@ -5,6 +5,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { boot } from '#lib/motion/boot.svelte.ts';
+	import ThemeToggle from '#lib/components/ThemeToggle.svelte';
 
 	const links = [
 		{ href: '/how-it-works/', label: 'How it works' },
@@ -30,6 +31,7 @@
 			aria-current={active ? 'page' : undefined}>{link.label}</a
 		>
 	{/each}
+	<ThemeToggle />
 </nav>
 
 <style>
@@ -42,7 +44,7 @@
 		align-items: center;
 		gap: clamp(14px, 1.8vw, 26px);
 		height: 46px;
-		padding: 0 10px 0 24px;
+		padding: 0 12px 0 24px;
 		background: var(--paper);
 		border-radius: 0 0 20px 20px;
 		transform: translate(-50%, -110%);
@@ -57,9 +59,7 @@
 		opacity: 1;
 	}
 	.link {
-		font: 500 0.72rem/1 var(--font-mono);
-		text-transform: uppercase;
-		letter-spacing: 0.11em;
+		font: 600 0.8rem/1 var(--font-body);
 		white-space: nowrap;
 		color: var(--ink-1);
 		padding-bottom: 2px;
@@ -85,19 +85,39 @@
 		color: var(--surface-0);
 		background: var(--accent-deep);
 	}
-	@media (max-width: 720px) {
+	/* sized to the lander, which is half the screen while a tile is open */
+	@container lander (max-width: 560px) {
 		.notch {
 			height: 40px;
-			gap: clamp(9px, 2.6vw, 15px);
+			gap: 11px;
 			padding: 0 8px 0 14px;
 			border-radius: 0 0 15px 15px;
 		}
 		.link {
-			font-size: 0.58rem;
-			letter-spacing: 0.04em;
+			font-size: 0.72rem;
 		}
 		.cta {
 			padding: 7px 10px;
+		}
+	}
+	@container lander (max-width: 400px) {
+		.notch {
+			gap: 8px;
+			padding: 0 6px 0 10px;
+		}
+		.link {
+			font-size: 0.66rem;
+		}
+	}
+	@container lander (max-width: 360px) {
+		.notch {
+			gap: 6px;
+		}
+		.link {
+			font-size: 0.6rem;
+		}
+		.cta {
+			padding: 6px 8px;
 		}
 	}
 </style>

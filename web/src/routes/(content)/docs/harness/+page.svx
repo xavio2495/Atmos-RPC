@@ -2,7 +2,6 @@
 	<title>Node harness · Atmos docs</title>
 </svelte:head>
 
-<span class="eyebrow">Docs · Harness</span>
 
 # A Node harness for browser-built workers
 

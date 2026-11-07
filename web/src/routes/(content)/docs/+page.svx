@@ -2,7 +2,6 @@
 	<title>Get started · Atmos docs</title>
 </svelte:head>
 
-<span class="eyebrow">Docs</span>
 
 # Get started
 

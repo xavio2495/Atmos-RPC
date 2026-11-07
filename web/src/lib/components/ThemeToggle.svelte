@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { boot } from '#lib/motion/boot.svelte.ts';
 	import { theme, toggleTheme } from '#lib/motion/theme.svelte.ts';
 
 	const dark = $derived(theme.value === 'dark');
@@ -7,7 +6,6 @@
 
 <button
 	class="toggle"
-	class:in={boot.ready}
 	type="button"
 	onclick={toggleTheme}
 	aria-label={dark ? 'Switch to light mode' : 'Switch to dark mode'}
@@ -29,10 +27,7 @@
 
 <style>
 	.toggle {
-		position: absolute;
-		top: clamp(18px, 2.6vw, 28px);
-		right: clamp(20px, 3.4vw, 36px);
-		z-index: 20;
+		flex: none;
 		display: grid;
 		place-items: center;
 		width: 28px;
@@ -42,13 +37,9 @@
 		cursor: pointer;
 		background: none;
 		color: var(--ink-0);
-		opacity: 0;
-		transition: opacity 400ms ease 300ms;
+		transition: opacity 160ms ease;
 	}
-	.toggle.in {
-		opacity: 1;
-	}
-	.toggle.in:hover {
+	.toggle:hover {
 		opacity: 0.6;
 	}
 	svg {

@@ -13,7 +13,6 @@
 	<title>Benchmarks · Atmos</title>
 </svelte:head>
 
-<span class="eyebrow">Benchmarks</span>
 <h1>Stock anon-rpc against Atmos, from the cloud</h1>
 <p class="lede">
 	The same wallet-shaped workload runs in each arm: plain fetch, the stock anon-rpc Nym worker,

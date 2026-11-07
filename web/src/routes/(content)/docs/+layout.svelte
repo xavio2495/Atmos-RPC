@@ -41,8 +41,7 @@
 		padding: 7px 13px;
 		border: 1px solid var(--hairline);
 		border-radius: 999px;
-		font: 500 0.7rem/1 var(--font-mono);
-		letter-spacing: 0.04em;
+		font: 500 0.78rem/1 var(--font-body);
 		color: var(--ink-1);
 		transition:
 			background 160ms ease,
@@ -79,7 +78,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
-		font: 600 0.95rem/1.2 var(--font-display);
+		font: 600 0.95rem/1.3 var(--font-body);
 		color: var(--ink-0);
 		border-bottom: none;
 	}
@@ -90,9 +89,7 @@
 		text-align: right;
 	}
 	.pager small {
-		font: 500 0.64rem/1 var(--font-mono);
-		text-transform: uppercase;
-		letter-spacing: 0.1em;
+		font: 500 0.74rem/1 var(--font-body);
 		color: var(--ink-2);
 	}
 	@media (prefers-reduced-motion: reduce) {

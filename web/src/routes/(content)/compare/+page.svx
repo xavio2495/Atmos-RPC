@@ -2,7 +2,6 @@
 	<title>Atmos vs stock anon-rpc</title>
 </svelte:head>
 
-<span class="eyebrow">Compare</span>
 
 # Atmos and stock anon-rpc
 

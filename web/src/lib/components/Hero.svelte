@@ -113,9 +113,7 @@
 		gap: 9px;
 		padding: 13px 22px;
 		border-radius: 999px;
-		font: 500 0.72rem/1 var(--font-mono);
-		text-transform: uppercase;
-		letter-spacing: 0.12em;
+		font: 600 0.86rem/1 var(--font-body);
 		transition:
 			background 180ms ease,
 			border-color 180ms ease;
@@ -161,7 +159,7 @@
 		justify-content: space-between;
 		gap: 16px;
 		padding: 5px 0;
-		font: 400 0.76rem/1.4 var(--font-mono);
+		font: 400 0.8rem/1.4 var(--font-body);
 		/* rows drift apart and blur while the card is a blob, and settle into line as it resolves */
 		opacity: calc(0.25 + var(--r) * 0.75);
 		filter: blur(calc((1 - var(--r)) * 3px));
@@ -172,9 +170,7 @@
 	}
 	.k {
 		color: var(--ink-2);
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-		font-size: 0.66rem;
+		font-size: 0.74rem;
 	}
 	.v {
 		color: var(--ink-0);
@@ -194,9 +190,7 @@
 		padding: 6px 16px;
 	}
 	.essentials a {
-		font: 500 0.66rem/1 var(--font-mono);
-		text-transform: uppercase;
-		letter-spacing: 0.1em;
+		font: 500 0.78rem/1 var(--font-body);
 		color: var(--ink-1);
 		transition: color 160ms ease;
 	}

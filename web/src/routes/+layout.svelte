@@ -5,7 +5,6 @@
 	import Preloader from '#lib/components/Preloader.svelte';
 	import Atmosphere from '#lib/components/Atmosphere.svelte';
 	import NavNotch from '#lib/components/NavNotch.svelte';
-	import ThemeToggle from '#lib/components/ThemeToggle.svelte';
 	import Hero from '#lib/components/Hero.svelte';
 	import { pageMorph } from '#lib/motion/pageMorph.ts';
 
@@ -35,7 +34,6 @@
 			<Atmosphere />
 			<NavNotch />
 			<Hero {open} />
-			<ThemeToggle />
 		</section>
 		<section class="tile-wrap" inert={!open} aria-hidden={!open}>
 			{#key key}
@@ -77,6 +75,9 @@
 		height: 100%;
 		border-radius: 24px;
 		overflow: hidden;
+	}
+	.lander {
+		container: lander / inline-size;
 	}
 	.route {
 		position: absolute;

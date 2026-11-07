@@ -2,7 +2,6 @@
 	<title>How it works · Atmos</title>
 </svelte:head>
 
-<span class="eyebrow">How it works</span>
 
 # Hiding the IP is the first step, not the last
 

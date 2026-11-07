@@ -2,7 +2,6 @@
 	<title>SDK · Atmos docs</title>
 </svelte:head>
 
-<span class="eyebrow">Docs · SDK</span>
 
 # The Atmos SDK
 
