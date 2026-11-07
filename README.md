@@ -76,7 +76,19 @@ The script checks for Node 24 and git, fetches `client/`, `sdk/`, `harness/` and
 | Chain ID | `11155111` |
 | Currency | `SepoliaETH` |
 
-The first answer takes 15–70 s while the host joins the mixnet and verifies the chain head. `GET http://127.0.0.1:8545/` reports readiness and how many answers were verified. Settings: `ATMOS_SHAPE=1` (constant-rate schedule), `ATMOS_PREFETCH=1` (re-prove recent reads each block), `ATMOS_BAL=1` (EIP-7928 mode), `ATMOS_CHECKPOINT=0x…` (your own trust anchor), `ATMOS_PUBLIC=1` (serve other hosts). Docker: `docker build -f host/Dockerfile.node -t atmos-host .`
+The first answer takes 15–70 s while the host joins the mixnet and verifies the chain head. `GET http://127.0.0.1:8545/` reports readiness and how many answers were verified. Settings:
+
+| Variable | Effect |
+|---|---|
+| `ATMOS_SHAPE=1` | constant-rate, padded schedule |
+| `ATMOS_PREFETCH=1` | re-prove recent reads at each block |
+| `ATMOS_BAL=1` | EIP-7928 access-list mode (experimental) |
+| `ATMOS_CHECKPOINT=0x…` | your own trust anchor (a Sepolia beacon block root) |
+| `ATMOS_ORIGINS=…` | extra browser origins allowed to call the host |
+| `ATMOS_PUBLIC=1` | an open host: any host name and any browser origin (default: local only) |
+| `ATMOS_RUNTIME=chromium` | run the worker in anon-rpc's browser harness instead of the Node harness |
+
+Docker: `docker build -f host/Dockerfile.node -t atmos-host .` then `docker run -p 127.0.0.1:8545:8545 atmos-host`. Publish on loopback as shown, since a plain `-p 8545:8545` exposes the host to your network.
 
 ### The SDK: an EIP-1193 provider
 
