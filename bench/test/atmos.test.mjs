@@ -310,6 +310,19 @@ Object.assign(audit, {
     c.close();
   },
 });
+Object.assign(audit, {
+  async "BAL: bulk calls leave one at a time, never batched; a newer waiting call supersedes an older one"() {
+    const { c } = await client();
+    FakeWorker.slow = { eth_getBlockAccessList: 500 };
+    const calls = [1, 2, 3].map((n) => c.bulk(URL_A, rpc(n, "eth_getBlockAccessList", [`0x${n}`])).then((r) => r.result, (e) => e.message));
+    const results = await Promise.all(calls);
+    FakeWorker.slow = {};
+    assert.deepEqual(results, ['eth_getBlockAccessList:["0x1"]', "bulk superseded", 'eth_getBlockAccessList:["0x3"]']);
+    const lane = workers.find((w) => w.posts.some((p) => p.body.includes("eth_getBlockAccessList")));
+    assert.ok(lane.posts.filter((p) => p.body.includes("eth_getBlockAccessList")).every((p) => !Array.isArray(JSON.parse(p.body))));
+    c.close();
+  },
+});
 const withCap = (p, ms) => Promise.race([p, sleep(ms).then(() => { throw new Error(`no answer in ${ms} ms`); })]);
 if (!process.argv.includes("--no-audit")) Object.assign(tests, audit);
 

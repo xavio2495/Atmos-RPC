@@ -475,20 +475,39 @@ export async function createAtmosClient({
       .finally(() => { bulkBooting = null; });
     return bulkBooting;
   }
-  async function bulk(url, body) {
-    if (Array.isArray(body)) throw new TypeError("send JSON-RPC calls one at a time; batching is automatic");
-    const route = await bulkLane();
+  // Per URL: one bulk call in flight, sent alone (a batch of large replies times out as a whole),
+  // and only the newest waiting call kept; an older waiting call is superseded. Head-following
+  // callers want the latest block, so piling up stale fetches only delays it.
+  const bulkQueues = new Map();
+  async function sendBulk(url, q, body) {
+    q.busy = true;
+    let route;
     try {
-      return await withTimeout(route.send(url, body), BULK_TIMEOUT_MS, "bulk");
+      route = await bulkLane();
+      return await withTimeout(postJson(route.worker, url, body, padBytes), BULK_TIMEOUT_MS, "bulk");
     } catch (e) {
-      if (e?.message === "bulk timeout" && bulkRoute === route) { bulkRoute = null; route.close(); }
+      if (e?.message === "bulk timeout" && route && bulkRoute === route) { bulkRoute = null; route.close(); }
       throw e;
+    } finally {
+      q.busy = false;
+      const next = q.next;
+      q.next = null;
+      if (next) sendBulk(url, q, next.body).then(next.resolve, next.reject);
     }
+  }
+  function bulk(url, body) {
+    if (Array.isArray(body)) return Promise.reject(new TypeError("send JSON-RPC calls one at a time; batching is automatic"));
+    let q = bulkQueues.get(url);
+    if (!q) bulkQueues.set(url, (q = { busy: false, next: null }));
+    if (!q.busy) return sendBulk(url, q, body);
+    q.next?.reject(new Error("bulk superseded"));
+    return new Promise((resolve, reject) => { q.next = { body, resolve, reject }; });
   }
 
   return {
     request,
-    // For large background reads that must not delay wallet calls: own route, no failover, 60 s cap.
+    // For large background reads that must not delay wallet calls: own route, no failover, no
+    // batching, 60 s cap from when the call is sent, and a newer call supersedes an older waiting one.
     bulk,
     // Milliseconds each JSON-RPC call spent queued behind a request in flight on its route (the last 1,000).
     stats: () => ({ queueWaitsMs: [...queueWaits] }),
