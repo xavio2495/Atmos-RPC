@@ -7,7 +7,7 @@
 	import HowDiagram from '#lib/components/HowDiagram.svelte';
 	import CopyLine from '#lib/components/CopyLine.svelte';
 
-	const COUNT = 11;
+	const COUNT = 14;
 	let current = $state(0);
 
 	function go(n: number) {
@@ -143,6 +143,51 @@
 
 	<section class="slide" class:on={current === 6}>
 		<div class="stage">
+			<p class="kicker">Node harness</p>
+			<h2>The Nym worker, without a browser</h2>
+			<ul class="road">
+				<li>
+					<b>Forked</b>anon-rpc's Node harness, extended with the browser pieces the Nym worker
+					needs (WebSocket, Blob, Worker, MessageChannel), inside a V8 isolate
+				</li>
+				<li>
+					<b>Fixed</b>WebAssembly that never finished loading, and a WebSocket bridge that sent
+					empty frames and silently broke every mixnet handshake
+				</li>
+				<li><b>Result</b>Ten parallel reads in 1.5–2.7 s, as fast as Chromium (2.7–3.6 s)</li>
+			</ul>
+			<p class="src">Same client in both; Cloud Run, 3 regions, 4 sessions each, 2026-11-06</p>
+		</div>
+	</section>
+
+	<section class="slide" class:on={current === 7}>
+		<div class="stage">
+			<p class="kicker">Hardened</p>
+			<h2>Closing what IP hiding leaves open</h2>
+			<ul class="road">
+				<li>
+					<b>Silent boot</b>The worker hash is pinned: starting sends no RPC call from your IP, and
+					a lying provider can't swap the worker
+				</li>
+				<li>
+					<b>Confined</b>The worker can reach only the Nym directory and its entry gateway;
+					everything else has to cross the mixnet
+				</li>
+				<li>
+					<b>Local only</b>The host answers localhost and wallet extensions; websites and DNS
+					rebinding are refused
+				</li>
+				<li>
+					<b>Audited</b>Redirect checks, entropy, WebSocket floods, trusted block hashes, EVM fork
+					rules: found and fixed, each with a test
+				</li>
+			</ul>
+			<p class="src">A traced boot made 0 RPC calls; a hostile worker's direct calls were refused</p>
+		</div>
+	</section>
+
+	<section class="slide" class:on={current === 8}>
+		<div class="stage">
 			<p class="kicker">Demo</p>
 			<h2>Verified Sepolia reads, from a browser tab</h2>
 			<p class="lead">
@@ -154,7 +199,7 @@
 		</div>
 	</section>
 
-	<section class="slide" class:on={current === 7}>
+	<section class="slide" class:on={current === 9}>
 		<div class="stage">
 			<p class="kicker">Install</p>
 			<h2>One line for MetaMask</h2>
@@ -171,7 +216,7 @@
 		</div>
 	</section>
 
-	<section class="slide" class:on={current === 8}>
+	<section class="slide" class:on={current === 10}>
 		<div class="stage">
 			<p class="kicker">The numbers</p>
 			<h2>Ten parallel reads, per region</h2>
@@ -196,7 +241,7 @@
 		</div>
 	</section>
 
-	<section class="slide" class:on={current === 9}>
+	<section class="slide" class:on={current === 11}>
 		<div class="stage">
 			<p class="kicker">Privacy, honestly</p>
 			<h2>Who, when, what</h2>
@@ -228,12 +273,41 @@
 		</div>
 	</section>
 
-	<section class="slide" class:on={current === 10}>
+	<section class="slide" class:on={current === 12}>
+		<div class="stage">
+			<p class="kicker">Found upstream</p>
+			<h2>What we found in anon-rpc itself</h2>
+			<ul class="road">
+				<li>
+					<b>Security</b><span>The Node harness follows redirects past its own address policy, to
+					loopback or cloud metadata</span>
+				</li>
+				<li>
+					<b>Security</b><span><code>getRandomValues</code> above 64 KiB returns a partly zero buffer,
+					silently</span>
+				</li>
+				<li>
+					<b>Bug</b><span><code>Response.url</code> is empty when the worker omits it, which breaks
+					libraries such as Helios</span>
+				</li>
+				<li>
+					<b>Reported</b><span>A lying bootstrap RPC can choose which worker runs (told to the author
+					privately)</span>
+				</li>
+			</ul>
+			<p class="src">Each fix is tested on upstream's own code: it fails before, passes after</p>
+		</div>
+	</section>
+
+	<section class="slide" class:on={current === 13}>
 		<div class="stage">
 			<p class="kicker">Next</p>
 			<h2>Roadmap</h2>
 			<ul class="road">
-				<li><b>Built</b>Routing, batching and failover · verified reads · the SDK and the host</li>
+				<li>
+					<b>Built</b>Routing, batching and failover · verified reads · the Node harness · hardening · the
+					SDK and the host
+				</li>
 				<li><b>Built, opt-in</b>Constant-rate shaping · access-list updates (experimental)</li>
 				<li><b>Next</b>Provider splitting, so no single provider sees every address</li>
 				<li>
