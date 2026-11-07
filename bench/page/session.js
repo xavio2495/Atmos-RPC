@@ -177,6 +177,8 @@ const ARMS = {
   // N1 that gives up on a silent pinned exit after 15 s instead of the tunnel's 60 s default.
   // N1 that sends a read to the warm standby instead of queueing it behind a request in flight.
   N1O: (opts, t0, out) => ARMS.N1(opts, t0, out, undefined, undefined, { overflow: true }),
+  // Check that the worker honours connectTimeoutMs: at 1 ms no exit handshake can finish, so boots must fail.
+  N1X: (opts, t0, out) => ARMS.N1(opts, t0, out, undefined, undefined, { tunnel: { connectTimeoutMs: 1 } }),
   N1T: (opts, t0, out) => ARMS.N1(opts, t0, out, undefined, undefined, { tunnel: { connectTimeoutMs: 15_000 } }),
   // N1 with twice the default reply SURBs (10 open, 2 per packet). The exit can see these counts.
   N1S: (opts, t0, out) => ARMS.N1(opts, t0, out, undefined, undefined, { tunnel: { openReplySurbs: 20, dataReplySurbs: 4 } }),
