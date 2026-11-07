@@ -3,7 +3,7 @@
 
 	type Provider = {
 		request(a: { method: string; params?: unknown[] }): Promise<unknown>;
-		status(): { counts: Record<string, number>; ready: boolean; following?: { accounts: number; block: number }; error?: string };
+		status(): { counts: Record<string, number>; ready: boolean; following?: { accounts: number; block: number; behind: number | null }; error?: string };
 		close(): void;
 		ready: Promise<void>;
 	};
@@ -140,7 +140,7 @@
 			{#if status}
 				<tr><td>Answers</td><td>{Object.entries(status.counts).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(', ') || '–'}</td></tr>
 				{#if status.following}
-					<tr><td>Access lists</td><td>{status.following.accounts} accounts kept current, at block {status.following.block}</td></tr>
+					<tr><td>Access lists</td><td>{status.following.accounts} accounts kept current, at block {status.following.block}{status.following.behind != null ? ` (${status.following.behind} behind${status.following.behind > 2 ? ': reads use proofs until it catches up' : ''})` : ''}</td></tr>
 				{/if}
 			{/if}
 		</tbody>

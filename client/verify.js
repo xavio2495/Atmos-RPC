@@ -292,7 +292,10 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
           // usually reaches one that has it.
           for (let i = 0; ; i++) {
             try {
-              return await onProviders({ jsonrpc: "2.0", id: 7, method: "eth_getBlockAccessList", params: [hash] }, (l) => l, accessLists, listRequest);
+              const t = Date.now();
+              const list = await onProviders({ jsonrpc: "2.0", id: 7, method: "eth_getBlockAccessList", params: [hash] }, (l) => l, accessLists, listRequest);
+              log({ event: "access-list", ms: Date.now() - t, bytes: JSON.stringify(list).length });
+              return list;
             } catch (e) {
               if (i === 3 || !/not available|does not exist|not found/i.test(String(e?.message))) throw e;
             }
@@ -472,7 +475,9 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
   return {
     close: () => clearInterval(ticker),
     // How many accounts the access lists keep current, and at which block.
-    following: () => (follower ? { accounts: follower.size, block: follower.block } : null),
+    // `behind`: blocks between the verified head and the last applied list. Past 2, reads
+    // fall back to proofs at the head, which name the account to a provider.
+    following: () => (follower ? { accounts: follower.size, block: follower.block, behind: head && follower.block >= 0 ? head.number - follower.block : null } : null),
     request: verifiedRequest,
     head: readHead,
     header: headerByNumber,
