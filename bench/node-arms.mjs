@@ -1,6 +1,6 @@
 // Arms whose worker runs in Node instead of in the page: Atmos v1 on the Atmos Node harness.
 globalThis.window = globalThis;
-const { ARMS } = await import("./page/dist/session.js");
+const { ARMS, NYM_WORKER_LIMITS } = await import("./page/dist/session.js");
 const { AnonRpcWorker } = await import("../harness/node-harness/dist/host.js");
 
 // The Nym worker is built for a browser: it needs WebAssembly room, a WebSocket and browser platform pieces.
@@ -9,7 +9,7 @@ class NymWorker extends AnonRpcWorker {
     super({
       ...init,
       capabilities: { fetch: true, webSocket: true, web: true },
-      limits: { memoryBytes: 1024 ** 3, deadlineMs: 60_000 },
+      limits: NYM_WORKER_LIMITS,
     });
   }
 }

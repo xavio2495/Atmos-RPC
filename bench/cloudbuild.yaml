@@ -1,5 +1,5 @@
 steps:
 - name: gcr.io/cloud-builders/docker
-  args: ["build", "-f", "bench/Dockerfile", "-t", "europe-west1-docker.pkg.dev/zentis-cg1-2026/atmos/bench:$_TAG", "."]
-images: ["europe-west1-docker.pkg.dev/zentis-cg1-2026/atmos/bench:$_TAG"]
+  args: ["build", "-f", "bench/Dockerfile", "-t", "${_REGION}-docker.pkg.dev/$PROJECT_ID/atmos/bench:$_TAG", "."]
+images: ["${_REGION}-docker.pkg.dev/$PROJECT_ID/atmos/bench:$_TAG"]
 options: { machineType: E2_HIGHCPU_8 }

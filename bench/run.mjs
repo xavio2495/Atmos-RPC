@@ -84,3 +84,5 @@ for (let round = 0; round < SESSIONS; round++) {
 await browser.close();
 server.close();
 console.log(JSON.stringify({ event: "done", region: REGION }));
+// Workers and verifier clocks can outlive their sessions; a Cloud Run task ends only when the process does.
+process.exit(0);

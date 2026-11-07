@@ -1,8 +1,7 @@
 import { AnonRpcWorker } from "@anon-rpc/browser-harness";
-import { createAtmosClient } from "../../client/atmos.js";
+import { createAtmosClient, NYM_SPECIFIER } from "../../client/atmos.js";
 import { v2Arms } from "./arms-v2.js";
 
-const NYM_SPECIFIER = "0x3aCD9742C68F6d993066Ae25533e09b9e1f60eD0";
 const BOOTSTRAP_RPC = "https://ethereum-rpc.publicnode.com";
 const SEPOLIA_RPC = "https://ethereum-sepolia-rpc.publicnode.com";
 const CALL_TIMEOUT_MS = 24_000;
@@ -196,3 +195,4 @@ window.runSession = async (opts) => {
 };
 
 export { ARMS };
+export { NYM_WORKER_LIMITS } from "../../client/atmos.js";
