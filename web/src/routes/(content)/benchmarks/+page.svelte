@@ -1,8 +1,9 @@
 <script lang="ts">
 	import BurstChart from '#lib/components/BurstChart.svelte';
-	import { run, regions, verified, harness, options, anonymity, type Arm, type Measured } from '#lib/data/bench.ts';
+	import { run, regions, regionsRun2, firstAnswer, parity, verified, harness, options, anonymity, type Arm, type Measured, type RegionRow } from '#lib/data/bench.ts';
 
 	const labels = Object.fromEntries(run.arms.map((a) => [a.arm, a.label])) as Record<Arm, string>;
+	const short: Partial<Record<Arm, string>> = { D: 'Direct', N0: 'Stock anon-rpc', N1: 'Atmos v1', N1H: 'Atmos, Node harness', N2VH: 'Verified, self-hosted' };
 	const ms = (v: number | null) =>
 		v == null ? '–' : v < 1000 ? `${v} ms` : `${(v / 1000).toFixed(1)} s`;
 	const ci = (c: [number, number] | null) => (c ? `${ms(c[0])} – ${ms(c[1])}` : '');
@@ -61,8 +62,9 @@
 
 <BurstChart stairs={run.burstStairs} {labels} cutoffMs={run.cutoffMs} />
 <p>
-	A call with no answer after {run.cutoffMs / 1000} s is cut off. The stock worker's median session
-	answered only its first two burst reads before that cut-off; the other eight are drawn at it.
+	A call with no answer after {run.cutoffMs / 1000} s is cut off. In this run the stock worker's
+	median session answered all ten burst reads before the cut-off, one after another, over 17 s;
+	in earlier runs most of them hit it.
 </p>
 <p>
 	The staircase is the cost of parallel calls through one stock worker. Its transport keeps a single
@@ -71,40 +73,100 @@
 	connection that is already warm.
 </p>
 
+{#snippet regionTable(rows: RegionRow[], arms: Arm[])}
+	<table>
+		<thead>
+			<tr>
+				<th>Region</th>
+				{#each arms as k (k)}<th class="num">{short[k] ?? k}</th>{/each}
+			</tr>
+		</thead>
+		<tbody>
+			{#each rows as r (r.region)}
+				<tr>
+					<td>{r.region}</td>
+					{#each arms as k (k)}
+						{@const c = r.cells[k]}
+						<td class="num"
+							>{#if c}{ms(c[0])}<br /><small>{ms(c[1])} · {c[2]}%</small>{:else}–{/if}</td
+						>
+					{/each}
+				</tr>
+			{/each}
+		</tbody>
+	</table>
+{/snippet}
+
 <h2>Three regions</h2>
 <p>
-	The headline comparison: run 2 on Cloud Run, 3 regions, 6 sessions per arm per region and
-	10-minute sessions (sessions on flashbots left out). Each cell is the burst median, then steady
-	p50 and the share of calls answered.
+	The final run: every arm on one image, Cloud Run in three regions, 4 sessions per arm per region,
+	10-minute sessions. Each cell is the burst median, then steady p50 and the share of calls
+	answered. A steady p50 of 0 ms for verified reads is <code>eth_blockNumber</code> answered from the
+	verified head.
+</p>
+{@render regionTable(regions, ['D', 'N0', 'N1', 'N1H', 'N2VH'])}
+<p>
+	When a route stalls, Atmos switched to its standby 14.7–18.3 s later, and each session lost only
+	the one call in flight (run 4).
+</p>
+
+<h2>Time to the first answer</h2>
+<p>
+	This is where Atmos is slower than the stock worker. Before its first answer, Atmos loads the Nym
+	directory, tests a gateway, and checks the route with a real call; verified reads also sync a
+	light client. Medians per region (europe-west1, us-east1, asia-south1):
+</p>
+<table>
+	<tbody>
+		<tr><td>Stock anon-rpc</td><td class="num">{firstAnswer.stock.map((v) => `${v} s`).join(' · ')}</td></tr>
+		<tr><td>Atmos v1, Node harness</td><td class="num">{firstAnswer.atmos.map((v) => `${v} s`).join(' · ')}</td></tr>
+		<tr><td>Atmos with verified reads</td><td class="num">{firstAnswer.verified.map((v) => `${v} s`).join(' · ')}</td></tr>
+	</tbody>
+</table>
+<p>Across all Atmos arms and regions, the first answer took 17–71 s, against 16–33 s for the stock worker.</p>
+
+<h2>Against direct RPC, per method</h2>
+<p>
+	The parity run: steady calls only, 4 sessions per arm per region. Each cell is p50 / p95. Atmos adds
+	about 0.5–0.6 s per call, which is the mixnet's round trip, and a verified balance adds about
+	another 0.5–0.9 s for its proof. The latest block number is answered from the verified head.
 </p>
 <table>
 	<thead>
 		<tr>
 			<th>Region</th>
+			<th>Method</th>
 			<th class="num">Direct</th>
-			<th class="num">Stock anon-rpc</th>
 			<th class="num">Atmos v1</th>
+			<th class="num">Verified</th>
 		</tr>
 	</thead>
 	<tbody>
-		{#each regions as r (r.region)}
+		{#each parity as p (p.region + p.method)}
 			<tr>
-				<td>{r.region}</td>
-				{#each ['D', 'N0', 'N1'] as const as k (k)}
-					{@const c = r.cells[k]}
-					<td class="num"
-						>{#if c}{ms(c[0])}<br /><small>{ms(c[1])} · {c[2]}%</small>{:else}–{/if}</td
-					>
-				{/each}
+				<td>{p.region}</td>
+				<td><code>{p.method}</code></td>
+				<td class="num">{ms(p.direct[0])} / {ms(p.direct[1])}</td>
+				<td class="num">{ms(p.atmos[0])} / {ms(p.atmos[1])}</td>
+				<td class="num">{ms(p.verified[0])} / {ms(p.verified[1])}</td>
 			</tr>
 		{/each}
 	</tbody>
 </table>
 <p>
-	A stock-anon-rpc burst of 24.0 s means its median session hit the 24 s cut-off. When a route
-	stalls, Atmos switched to its standby 14.7–18.3 s later, and each session lost only the one call
-	in flight (run 4).
+	<small
+		>In the benchmark, <code>eth_call</code>, <code>eth_estimateGas</code> and receipts pass through the
+		verified arm unchecked; the self-hosted endpoint runs <code>eth_call</code> locally on proven state,
+		which is measured separately.</small
+	>
 </p>
+
+<h2>Earlier reference: run 2</h2>
+<p>
+	Six sessions per arm per region, 10-minute sessions, sessions on flashbots left out. A stock burst of
+	24.0 s means the median session hit the 24 s cut-off.
+</p>
+{@render regionTable(regionsRun2, ['D', 'N0', 'N1'])}
 
 {#snippet measured(rows: Measured[])}
 	<table>
@@ -195,8 +257,9 @@
 		<code>eth_blockNumber</code>, one <code>eth_getTransactionCount</code>.
 	</li>
 	<li>
-		<strong>Steady polling.</strong> <code>eth_blockNumber</code> every 12 s, and a balance refresh every
-		30 s.
+		<strong>Steady polling.</strong> <code>eth_blockNumber</code> every 12 s and a balance every third
+		tick. Three times per session, one <code>eth_call</code>, one <code>eth_estimateGas</code> and one
+		receipt lookup.
 	</li>
 	<li>
 		<strong>Write.</strong> One unfunded Sepolia transaction from a fresh key. The expected answer
@@ -208,7 +271,8 @@
 <ul>
 	<li>The unit is the session, not the call, since calls within a session are correlated.</li>
 	<li>
-		Arms are interleaved round-robin in each region, so drift over time hits every arm equally.
+		Arms are interleaved in each region, with the order rotated per task, so drift over time and the
+		cost of a cold start hit every arm equally.
 	</li>
 	<li>
 		The direct arm is each region's own floor. Latency added by the anonymity network is reported

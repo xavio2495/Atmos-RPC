@@ -11,8 +11,10 @@ Atmos is a client layer on top of [anon-rpc](https://github.com/ethereum/anon-rp
 
 Measured on Cloud Run with headless sessions (full tables on the website's benchmarks page):
 
-- **Speed:** a burst of ten parallel reads took 2.3–3.3 s with Atmos against 18.8 s to over 24 s with stock anon-rpc, across three regions, and Atmos answered 99–100 % of calls.
-- **Verified reads:** every read proof-checked, with a 3.55 s burst and 1.43 s p95 (europe-west1).
+- **Speed:** across three regions, a burst of ten parallel reads took 1.5–3.6 s with Atmos against 14.7–22.0 s with stock anon-rpc, steady p95 was 3–5× lower, and every Atmos arm answered 99–100 % of calls.
+- **Against direct RPC:** Atmos adds about 0.5–0.6 s per call, the mixnet's round trip. A verified balance adds about 0.5–0.9 s more for its proof. The latest block number is answered from the verified head with no wait.
+- **Verified reads:** every read proof-checked, with a 2.7–5.8 s burst and 1.3–2.8 s p95, close to unverified Atmos.
+- **First answer:** slower than stock. Atmos tests its route before trusting it, so the first answer took 17–71 s, against 16–33 s.
 - **No browser needed:** the Node harness runs the Nym worker at the same speed as headless Chromium, with the worker's hash pinned and its network limited to the Nym API and its entry gateway.
 - **Anonymity:** with the constant-rate schedule on, an observer of the outgoing requests told busy from idle no better than chance. Replies are not padded, and incoming traffic has not been measured.
 
