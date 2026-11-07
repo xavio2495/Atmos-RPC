@@ -10,6 +10,7 @@
 		{ href: '/how-it-works/', label: 'How it works' },
 		{ href: '/compare/', label: 'Compare' },
 		{ href: '/benchmarks/', label: 'Benchmarks' },
+		{ href: '/demo/', label: 'Demo' },
 		{ href: '/docs/', label: 'Docs', cta: true }
 	];
 

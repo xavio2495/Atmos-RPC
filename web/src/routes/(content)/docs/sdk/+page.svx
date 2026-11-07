@@ -1,0 +1,73 @@
+<svelte:head>
+	<title>SDK · Atmos docs</title>
+</svelte:head>
+
+<span class="eyebrow">Docs · SDK</span>
+
+# The Atmos SDK
+
+<p class="lede"><code>createAtmos()</code> gives you an EIP-1193 provider for Sepolia. Every call leaves through the Nym mixnet, and reads are checked against a light-client head before they reach your code. It runs in the browser and in Node, and works with viem, ethers and wagmi.</p>
+
+<div class="callout"><p><strong>Not on npm yet.</strong> The SDK is the <code>sdk/</code> folder of the Atmos repository. Install its dependencies there (<code>npm install</code> in <code>sdk/</code>) and import <code>sdk/index.js</code> in the browser or <code>sdk/node.js</code> in Node. The Node runtime also needs the harness built: <code>cd harness &amp;&amp; npm install &amp;&amp; npm run build</code>.</p></div>
+
+## Quick start
+
+```js
+import { createAtmos } from "atmos-rpc"; // sdk/index.js in the browser, sdk/node.js in Node
+import { createPublicClient, custom } from "viem";
+import { sepolia } from "viem/chains";
+
+const atmos = createAtmos();
+const client = createPublicClient({ chain: sepolia, transport: custom(atmos) });
+
+console.log(await client.getBalance({ address: "0x…" })); // proven against the verified head
+atmos.close();
+```
+
+The first call waits for the provider to start: 15 to 70 seconds while the worker downloads, joins the mixnet, finds a route and verifies the chain head. `await atmos.ready` to wait for it explicitly.
+
+## Options
+
+| Option | Default | What it does | What it costs |
+|---|---|---|---|
+| `checkpoint` | finalized root two beacon APIs agree on | the light client's trust anchor (a beacon block root) | pass your own to avoid trusting the beacon APIs on first use |
+| `bal` | `false` | keeps accounts you have read current from each block's EIP-7928 access list, verified against the header, so reading them again names nothing to a provider | one list per block (70–160 KB, 3–9 s through Nym); Sepolia only |
+| `shape` | `false` | every call leaves on a fixed clock, padded, with dummies in the gaps | about one slot per call: up to 4 s for reads, 8 s for proofs |
+| `prefetch` | `false` | re-proves recent reads at each new block and answers repeats at once | extra traffic on every block |
+| `log` | none | called with each internal event (`checkpoint`, `route-accepted`, …) | |
+
+## What is verified
+
+| Method | How it is answered |
+|---|---|
+| `eth_chainId`, `net_version` | locally |
+| `eth_blockNumber` | the verified head, no request |
+| `eth_getBalance`, `eth_getTransactionCount`, `eth_getCode`, `eth_getStorageAt` | `eth_getProof` checked against the head's state root (or the access lists, with `bal`) |
+| `eth_call` | run in a local EVM on proven state |
+| `eth_estimateGas` | the provider's figure, with the call proven not to revert |
+| `eth_getTransactionReceipt` | checked against the block's receipts root |
+| `eth_getBlockByNumber`, `eth_getBlockByHash` | header proven; transaction list is the provider's |
+| `eth_sendRawTransaction` | sent through the mixnet; the returned hash must match |
+| anything else | sent through the mixnet unverified, and counted |
+
+`atmos.status()` returns the counts by kind (`verified`, `advisory`, `plain`, `local`, `failed`), and with `bal` how many accounts are kept current.
+
+## Sending transactions
+
+Atmos holds no keys: `eth_accounts` is empty and `eth_sendTransaction` is refused. Sign with a local account and send the raw transaction:
+
+```js
+import { createWalletClient, custom } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+
+const wallet = createWalletClient({ account: privateKeyToAccount(key), chain: sepolia, transport: custom(atmos) });
+await wallet.sendTransaction({ to, value }); // signed here, broadcast over Nym
+```
+
+## Events
+
+The provider emits `connect` (with `{ chainId: "0xaa36a7" }`) once ready, and `disconnect` if it fails to start or is closed. It never changes chain or accounts.
+
+## In a browser page
+
+The worker runs in anon-rpc's sandboxed iframe harness. A Content-Security-Policy on your page applies to it too; it needs `script-src 'unsafe-inline' 'wasm-unsafe-eval' blob:`, `worker-src blob:`, and `connect-src` for `https://validator.nymtech.net`, the worker's download hosts (`cdn.jsdelivr.net`, `unpkg.com`, `raw.githubusercontent.com`) and `wss:` for the gateways. The [demo](/demo/) runs under exactly that policy.
