@@ -287,13 +287,13 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
   const follower = accessLists?.length
     ? createAccessListFollower({
         headerAt: headerByNumber,
-        fetchList: async (hash) => {
+        fetchList: async (block) => {
           // Behind one URL, some of a provider's backends lack the method; another try
           // usually reaches one that has it.
           for (let i = 0; ; i++) {
             try {
               const t = Date.now();
-              const list = await onProviders({ jsonrpc: "2.0", id: 7, method: "eth_getBlockAccessList", params: [hash] }, (l) => l, accessLists, listRequest);
+              const list = await onProviders({ jsonrpc: "2.0", id: 7, method: "eth_getBlockAccessList", params: [block] }, (l) => l, accessLists, listRequest);
               log({ event: "access-list", ms: Date.now() - t, bytes: JSON.stringify(list).length });
               return list;
             } catch (e) {

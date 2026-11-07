@@ -31,7 +31,7 @@ export function accessListHash(list) {
 // A working set of proven accounts kept current by every block's access list, so a
 // read of a known account asks nothing that names it. Every block's list is the same
 // request for everyone. `headerAt(n)` returns a verified header; `fetchList(hash)`
-// returns that block's access list as JSON, which must hash to the header's commitment.
+// returns a block's access list (by number) as JSON, which must hash to the header's commitment.
 // Each account records the block its values hold at. A gap longer than `maxGap`
 // blocks empties the set, since its headers can't be walked. Up to `parallel` lists
 // are fetched at once (one per bulk lane) and applied in block order.
@@ -68,17 +68,25 @@ export function createAccessListFollower({ headerAt, fetchList, maxGap, parallel
       at = n;
       return;
     }
-    const load = (b) => headerAt(b).then(async (header) => ({ header, list: await fetchList(header.hash) }));
-    while (at < n) {
-      const batch = [];
-      for (let b = at + 1; b <= Math.min(n, at + parallel); b++) batch.push(load(b));
-      batch.forEach((p) => p.catch(() => {}));
-      for (const p of batch) {
-        const { header, list } = await p;
-        if (accessListHash(list) !== header.blockAccessListHash?.toLowerCase()) throw new Error("access list does not match header");
-        apply(list, at + 1);
-        at++;
+    // The list is asked for by number while its header is fetched alongside; it must still
+    // hash to that verified header. `parallel` loads stay in flight, applied in order.
+    const load = (b) => Promise.all([headerAt(b), fetchList("0x" + b.toString(16))]);
+    const inflight = [];
+    let next = at + 1;
+    const fill = () => {
+      while (inflight.length < parallel && next <= n) {
+        const p = load(next++);
+        p.catch(() => {});
+        inflight.push(p);
       }
+    };
+    fill();
+    while (inflight.length) {
+      const [header, list] = await inflight.shift();
+      if (accessListHash(list) !== header.blockAccessListHash?.toLowerCase()) throw new Error("access list does not match header");
+      apply(list, at + 1);
+      at++;
+      fill();
     }
   }
 
