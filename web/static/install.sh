@@ -8,14 +8,16 @@
 # agree to the optional systemd user service.
 #
 # Settings (environment):
-#   ATMOS_REPO     git URL of the Atmos repository
+#   ATMOS_REPO     git URL of the Atmos repository (default: the public repository)
 #   ATMOS_REF      branch or tag (default: main)
 #   ATMOS_DIR      install directory (default: ~/.atmos)
 #   ATMOS_PORT     local port (default: 8545)
 #   ATMOS_SERVICE  1 = install a systemd user service, 0 = don't; unset = ask if a terminal is present
+#   ATMOS_CHECKPOINT  optional trusted Sepolia beacon block root; by default the host picks the
+#                  finalized root two beacon APIs agree on, fetched through the mixnet
 set -eu
 
-REPO="${ATMOS_REPO:-}"
+REPO="${ATMOS_REPO:-https://github.com/xavio2495/Atmos-RPC.git}"
 REF="${ATMOS_REF:-main}"
 DIR="${ATMOS_DIR:-$HOME/.atmos}"
 PORT="${ATMOS_PORT:-8545}"
@@ -25,14 +27,13 @@ say() { printf '%s\n' "$*"; }
 die() { printf 'atmos: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 is required but was not found"; }
 
-[ -n "$REPO" ] || die "set ATMOS_REPO to the Atmos git URL, e.g. ATMOS_REPO=https://github.com/<owner>/<repo>.git"
 need git
 need node
 need npm
 major=$(node -p 'process.versions.node.split(".")[0]')
 [ "$major" -ge 24 ] || die "Node 24 or newer is required (found $(node -v))"
 
-# Fetch only what the host needs: the client, the harness and the host.
+# Fetch only what the host needs: the client, the SDK, the harness and the host.
 if [ -d "$DIR/.git" ]; then
   say "Updating $DIR"
   git -C "$DIR" fetch --depth 1 origin "$REF"
@@ -41,36 +42,21 @@ elif [ -e "$DIR" ] && [ -n "$(ls -A "$DIR" 2>/dev/null)" ]; then
   die "$DIR exists and is not an Atmos install; set ATMOS_DIR to another directory"
 else
   say "Installing into $DIR"
-  git clone -q --depth 1 --branch "$REF" --filter=blob:none --sparse "$REPO" "$DIR"
+  git clone -q --depth 1 --branch "$REF" --filter=blob:none --sparse "$REPO" "$DIR" ||
+    die "could not clone $REPO. While the repository is private, cloning needs your GitHub credentials (an SSH key, or 'gh auth login'), or set ATMOS_REPO to a copy you can reach"
 fi
-git -C "$DIR" sparse-checkout set client harness host
+git -C "$DIR" sparse-checkout set client sdk harness host
 
 say "Building the harness and the host (this downloads npm packages)"
-(cd "$DIR/harness" && npm install --no-audit --no-fund --loglevel=error && npm run build --silent)
-(cd "$DIR/host" && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --no-audit --no-fund --omit=optional --loglevel=error && npm run build --silent)
+# npm ci installs exactly the versions in the committed lockfiles.
+(cd "$DIR/harness" && npm ci --no-audit --no-fund --loglevel=error && npm run build --silent)
+(cd "$DIR/host" && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund --omit=optional --loglevel=error && npm run build --silent)
 
-# The launcher picks a fresh trust anchor at every start: the Sepolia finalized block root that two
-# independent beacon APIs agree on. A root goes stale, so it is never stored.
+# The launcher. The host finds its own trust anchor through the mixnet unless ATMOS_CHECKPOINT is set.
 cat > "$DIR/atmos-host" <<EOF
 #!/bin/sh
 set -eu
 cd "$DIR/host"
-if [ -z "\${ATMOS_CHECKPOINT:-}" ]; then
-  ATMOS_CHECKPOINT=\$(node -e '
-    const apis = ["https://lodestar-sepolia.chainsafe.io", "https://ethereum-sepolia-beacon-api.publicnode.com"];
-    const root = (b) => fetch(b + "/eth/v1/beacon/headers/finalized").then((r) => r.json()).then((j) => j.data.root);
-    (async () => {
-      for (let i = 0; i < 3; i++) {
-        const [a, b] = await Promise.all(apis.map(root));
-        if (a === b) return console.log(a);
-        await new Promise((r) => setTimeout(r, 12000));
-      }
-      console.error("the beacon APIs disagree on the finalized root; set ATMOS_CHECKPOINT");
-      process.exit(1);
-    })().catch((e) => { console.error(String(e)); process.exit(1); });
-  ')
-  export ATMOS_CHECKPOINT
-fi
 export PORT="\${PORT:-$PORT}"
 exec node --dns-result-order=ipv4first server.mjs
 EOF
