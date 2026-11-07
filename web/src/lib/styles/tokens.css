@@ -10,6 +10,15 @@
 @import '@fontsource/ibm-plex-mono/400.css';
 @import '@fontsource/ibm-plex-mono/500.css';
 
+/* Dune Rise (Fontswan, SIL Open Font License 1.1; the licence text is embedded in the font) */
+@font-face {
+	font-family: 'Dune Rise';
+	src: url('../fonts/DuneRise.ttf') format('truetype');
+	font-weight: 400;
+	font-style: normal;
+	font-display: block;
+}
+
 :root {
 	/* surfaces */
 	--paper: #e9eef0; /* frame and page ground */
@@ -43,6 +52,7 @@
 	--status-pending: var(--ink-2);
 	--status-error: #c2412d;
 
+	--font-title: 'Dune Rise', system-ui, sans-serif; /* the wordmark only */
 	--font-display: 'Bricolage Grotesque Variable', 'Bricolage Grotesque', system-ui, sans-serif;
 	--font-body: 'IBM Plex Sans', system-ui, sans-serif;
 	--font-mono: 'IBM Plex Mono', ui-monospace, monospace;

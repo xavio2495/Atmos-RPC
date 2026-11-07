@@ -74,7 +74,7 @@
 			for (const layer of layers)
 				for (const [x, y] of layer) {
 					ctx!.beginPath();
-					ctx!.arc(x, y, 2.2, 0, Math.PI * 2);
+					ctx!.roundRect(x - 2.5, y - 2.5, 5, 5, 1.2);
 					ctx!.fill();
 				}
 			for (const p of packets) {
@@ -94,7 +94,7 @@
 				ctx!.globalAlpha = 0.85 * fade;
 				ctx!.fillStyle = accent;
 				ctx!.beginPath();
-				ctx!.arc(x, y, 3, 0, Math.PI * 2);
+				ctx!.roundRect(x - 3.5, y - 3.5, 7, 7, 1.8);
 				ctx!.fill();
 			}
 			ctx!.globalAlpha = 1;

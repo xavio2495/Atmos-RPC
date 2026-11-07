@@ -89,8 +89,8 @@
 	}
 	.mark {
 		margin: 0;
-		font: 640 clamp(4.2rem, 11vw, 8.6rem) / 0.86 var(--font-display);
-		letter-spacing: -0.06em;
+		font: 400 clamp(2.8rem, 7.4vw, 5.8rem) / 1 var(--font-title);
+		letter-spacing: 0.04em;
 		color: var(--ink-0);
 	}
 	.tag {
@@ -220,7 +220,7 @@
 			display: none;
 		}
 		.hero.open .mark {
-			font-size: 3.4rem;
+			font-size: 2.4rem;
 		}
 		.card {
 			display: none;
