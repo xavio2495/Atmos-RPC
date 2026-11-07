@@ -1,0 +1,79 @@
+<svelte:head>
+	<title>Install · Atmos docs</title>
+</svelte:head>
+
+<script>
+	import CopyLine from '#lib/components/CopyLine.svelte';
+</script>
+
+# Install
+
+<p class="lede">One command installs the Atmos host: a local Sepolia RPC endpoint for your wallet, whose calls leave through the Nym mixnet and whose reads are checked against a light client.</p>
+
+<CopyLine text="curl -fsSL https://atmos.xavio.dev/install.sh | sh" />
+
+<div class="callout"><p><strong>The repository is private for now.</strong> The installer clones it, so until it is public the clone needs your GitHub credentials (an SSH key, or <code>gh auth login</code>), or set <code>ATMOS_REPO</code> to a copy you can reach.</p></div>
+
+## Requirements
+
+- Linux or macOS, with `git`, `npm` and **Node 24 or newer**.
+- `systemctl`, only if you want the host to run in the background.
+
+## What it does
+
+1. Clones the parts of the repository the host needs (`client`, `sdk`, `harness`, `host`) into `~/.atmos`. Run again, it updates that copy.
+2. Builds the Node harness and the host with `npm ci`, from the committed lockfiles.
+3. Writes a launcher, `~/.atmos/atmos-host`.
+4. Asks whether to install a systemd user service, so the host runs in the background. It writes nothing outside `~/.atmos` unless you agree.
+
+The host picks its own trust anchor: the finalized beacon block root two beacon APIs agree on, fetched through the mixnet. Set `ATMOS_CHECKPOINT` to use your own.
+
+## Add it to MetaMask
+
+In MetaMask, open Settings, then Networks, then Add a network manually:
+
+| Field | Value |
+|---|---|
+| Network name | Sepolia via Atmos |
+| RPC URL | `http://127.0.0.1:8545/11155111` |
+| Chain ID | `11155111` |
+| Currency symbol | SepoliaETH |
+
+<CopyLine text="http://127.0.0.1:8545/11155111" />
+
+The first answer takes 15 to 70 seconds while the host joins the mixnet. `http://127.0.0.1:8545/` shows whether it is ready and counts its answers by kind.
+
+## Settings
+
+Set these in the environment of the install command, for example `curl -fsSL https://atmos.xavio.dev/install.sh | ATMOS_PORT=8546 sh`.
+
+| Variable | Default | What it sets |
+|---|---|---|
+| `ATMOS_DIR` | `~/.atmos` | Install directory |
+| `ATMOS_PORT` | `8545` | Local port |
+| `ATMOS_SERVICE` | ask | `1` installs the systemd user service, `0` doesn't |
+| `ATMOS_CHECKPOINT` | chosen by the host | A trusted Sepolia beacon block root |
+| `ATMOS_REPO` | the Atmos repository | Git URL to install from |
+| `ATMOS_REF` | `main` | Branch or tag |
+
+## Run and stop it
+
+Without the service, start the host with `~/.atmos/atmos-host`. With it:
+
+```sh
+journalctl --user -u atmos-host -f        # logs
+systemctl --user stop atmos-host          # stop
+```
+
+## Remove it
+
+```sh
+systemctl --user disable --now atmos-host        # if you installed the service
+rm ~/.config/systemd/user/atmos-host.service     # if you installed the service
+rm -rf ~/.atmos
+```
+
+## Other ways in
+
+- **In your own app:** the [SDK](/docs/sdk/) gives you the same verified, mixnet-routed calls as an EIP-1193 provider.
+- **Docker, or a host for others:** [Self-host](/docs/self-host/) covers the Docker images, the browser runtime, access rules and the constant-rate schedule.

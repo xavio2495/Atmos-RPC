@@ -5,7 +5,79 @@
 
 # Client API
 
-<p class="lede">The whole surface is one async factory and the two methods on what it returns.</p>
+<p class="lede">The routing layer the SDK runs on, for code that wants it on its own: batching, a standby route and failover, without verification. The whole surface is one async factory and the two methods on what it returns.</p>
+
+## Set up
+
+The client is one file, `client/atmos.js`, in the Atmos repository. It isn't on npm. In the browser it needs a bundler that resolves npm packages (Vite, esbuild, webpack) and anon-rpc's reference harness:
+
+```sh
+npm install @anon-rpc/browser-harness@0.4.0
+```
+
+Then copy `client/atmos.js` into your project. In Node, the worker runs in the [Node harness](/docs/harness/) instead.
+
+## Quick start
+
+```js
+import { createAtmosClient } from "./atmos.js";
+
+// Used once, by the harness, to read the worker's hash from the specifier contract.
+// This one read is not anonymised: use a provider you already trust.
+const bootstrapProvider = {
+  async request({ method, params }) {
+    const res = await fetch("https://ethereum-rpc.publicnode.com", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    });
+    const body = await res.json();
+    if (body.error) throw new Error(body.error.message);
+    return body.result;
+  },
+};
+
+const RPC = "https://rpc.mevblocker.io";
+
+const atmos = await createAtmosClient({ bootstrapProvider, probeUrl: RPC });
+
+const reply = await atmos.request(RPC, {
+  jsonrpc: "2.0",
+  id: 1,
+  method: "eth_getBalance",
+  params: ["0x00000000219ab540356cBB839Cbe05303d7705Fa", "latest"],
+});
+console.log(reply.result);
+
+// When the page is done with it:
+atmos.close();
+```
+
+## What happens on startup
+
+`createAtmosClient` resolves once one route is proven to work. In practice that takes from about 10 seconds to a minute:
+
+1. It reads the Nym directory and keeps the entry gateways and exits in the top performance band.
+2. It picks an entry that answers a WebSocket, and an exit it hasn't used yet.
+3. It boots the stock Nym worker on that pair and waits for `ready`.
+4. It sends `eth_chainId` to `probeUrl`, up to twice. Only a route that answers is accepted. This also warms the connection to that provider, so the first real call doesn't pay for it.
+5. Once the first route is accepted, a second one boots in the background as the standby.
+
+If four routes in a row fail, `createAtmosClient` rejects with `no working route`.
+
+## Choosing providers
+
+Atmos works with any JSON-RPC URL, but not every provider accepts traffic from mixnet exits. Measured on 2026-11-06:
+
+| Provider | Accepts Nym exits | Notes |
+|---|---|---|
+| `rpc.mevblocker.io` | yes | Clean on proofs as well as reads |
+| `ethereum-rpc.publicnode.com` | yes | Sometimes rejects `eth_getProof` near the head (error 4444) |
+| `eth.drpc.org` | yes | The free tier allows at most 3 calls per batch; Atmos respects that |
+| `rpc.flashbots.net` | yes | |
+| `1rpc.io` | **no** | Returns 403 to Nym exits |
+
+Use the same URL for `probeUrl` as for your first calls, so the warm connection gets used.
 
 ## `createAtmosClient(options)`
 

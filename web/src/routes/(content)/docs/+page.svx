@@ -2,91 +2,47 @@
 	<title>Get started · Atmos docs</title>
 </svelte:head>
 
+<script>
+	import CopyLine from '#lib/components/CopyLine.svelte';
+</script>
+
 
 # Get started
 
-<p class="lede">Atmos is a small browser module on top of <code>@anon-rpc/browser-harness</code>. You give it a bootstrap provider and an RPC URL, and it gives you back a <code>request</code> function that sends JSON-RPC through the Nym mixnet, batched and with a standby route ready.</p>
+<p class="lede">Atmos sends your Ethereum RPC calls through the Nym mixnet, from anon-rpc's sandboxed worker, and checks the answers against a light client before you see them. Use it from a wallet through a local host, or from your own app through the SDK. Sepolia only, for now.</p>
 
-<div class="callout"><p><strong>v1, not yet published.</strong> Atmos is a single file, <code>client/atmos.js</code>, in the Atmos repository. It isn't on npm yet. The API on these pages is what that file exports today.</p></div>
+## In a wallet, such as MetaMask
 
-## Requirements
+Run the Atmos host on your own machine. It gives the wallet an ordinary RPC URL and sends every call on through Nym, checked against a light client.
 
-- **A browser.** The harness runs the worker in a sandboxed iframe and talks to Nym over WebSockets, so Atmos does not run in Node.
-- **A bundler** that resolves npm packages (Vite, esbuild, webpack).
-- **`@anon-rpc/browser-harness` 0.4.0**, the reference harness from the anon-rpc project.
+<CopyLine text="curl -fsSL https://atmos.xavio.dev/install.sh | sh" />
 
-## Install
+Then add `http://127.0.0.1:8545/11155111` to MetaMask as a Sepolia network. [Install](/docs/install/) has the requirements, the settings and how to remove it.
 
-```sh
-npm install @anon-rpc/browser-harness@0.4.0
-```
+## In your own app
 
-Then copy `client/atmos.js` into your project.
-
-## Quick start
+The SDK's `createAtmos()` returns an EIP-1193 provider, so viem, ethers and wagmi use it unchanged, in the browser and in Node.
 
 ```js
-import { createAtmosClient } from "./atmos.js";
+import { createAtmos } from "atmos-rpc"; // sdk/index.js in the browser, sdk/node.js in Node
+import { createPublicClient, custom } from "viem";
+import { sepolia } from "viem/chains";
 
-// Used once, by the harness, to read the worker's hash from the specifier contract.
-// This one read is not anonymised: use a provider you already trust.
-const bootstrapProvider = {
-  async request({ method, params }) {
-    const res = await fetch("https://ethereum-rpc.publicnode.com", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-    });
-    const body = await res.json();
-    if (body.error) throw new Error(body.error.message);
-    return body.result;
-  },
-};
+const atmos = createAtmos();
+const client = createPublicClient({ chain: sepolia, transport: custom(atmos) });
 
-const RPC = "https://rpc.mevblocker.io";
-
-const atmos = await createAtmosClient({ bootstrapProvider, probeUrl: RPC });
-
-const reply = await atmos.request(RPC, {
-  jsonrpc: "2.0",
-  id: 1,
-  method: "eth_getBalance",
-  params: ["0x00000000219ab540356cBB839Cbe05303d7705Fa", "latest"],
-});
-console.log(reply.result);
-
-// When the page is done with it:
+console.log(await client.getBalance({ address: "0x…" })); // proven against the verified head
 atmos.close();
 ```
 
-## What happens on startup
+The SDK is not on npm yet: it is the `sdk/` folder of the Atmos repository. The [SDK docs](/docs/sdk/) cover its options, what is verified and what each option costs. The [demo](/demo/) runs it in your browser.
 
-`createAtmosClient` resolves once one route is proven to work. In practice that takes from about 10 seconds to a minute:
+## What to expect
 
-1. It reads the Nym directory and keeps the entry gateways and exits in the top performance band.
-2. It picks an entry that answers a WebSocket, and an exit it hasn't used yet.
-3. It boots the stock Nym worker on that pair and waits for `ready`.
-4. It sends `eth_chainId` to `probeUrl`, up to twice. Only a route that answers is accepted. This also warms the connection to that provider, so the first real call doesn't pay for it.
-5. Once the first route is accepted, a second one boots in the background as the standby.
+- **The first answer is slow.** It takes 15 to 70 seconds while the worker downloads, joins the mixnet, finds a working route and verifies the chain head.
+- **After that,** a call takes about 0.5–0.6 s longer than plain RPC, which is the mixnet's round trip. A verified balance adds about another 0.5–0.9 s for its proof, and the latest block number is answered from the verified head with no request. The [benchmarks](/benchmarks/) have the measurements.
+- **Providers see a Nym exit, not your IP.** They still see what you ask for, including the addresses you read.
 
-If four routes in a row fail, `createAtmosClient` rejects with `no working route`.
+## Underneath
 
-## Choosing providers
-
-Atmos works with any JSON-RPC URL, but not every provider accepts traffic from mixnet exits. Measured on 2026-11-06:
-
-| Provider | Accepts Nym exits | Notes |
-|---|---|---|
-| `rpc.mevblocker.io` | yes | Clean on proofs as well as reads |
-| `ethereum-rpc.publicnode.com` | yes | Sometimes rejects `eth_getProof` near the head (error 4444) |
-| `eth.drpc.org` | yes | The free tier allows at most 3 calls per batch; Atmos respects that |
-| `rpc.flashbots.net` | yes | |
-| `1rpc.io` | **no** | Returns 403 to Nym exits |
-
-Use the same URL for `probeUrl` as for your first calls, so the warm connection gets used.
-
-## Next
-
-- [Client API](/docs/client/): every option, method and event.
-- [Wallet guide](/docs/wallets/): use Atmos as an EIP-1193 provider with viem or ethers.
-- [Routing & batching](/docs/behaviour/): what Atmos does with each call, and why.
+Both run on `client/atmos.js`, the routing layer: batching, a standby route and failover, without verification. The [Client API](/docs/client/) documents it for code that wants that layer on its own.

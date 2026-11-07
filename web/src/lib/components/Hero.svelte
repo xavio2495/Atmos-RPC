@@ -1,39 +1,11 @@
 <!--
   Hero: the persistent left tile. The wordmark, one line of pitch, two doors (docs for
-  builders, benchmarks for the sceptical), and the morph card. The card is the one place the
-  full morph runs: an amorphous blob (a request scattered across the mixnet) that settles into
-  a structured answer when the visitor points at it, and loosens again when they leave.
+  builders, benchmarks for the sceptical), and the one-line install of the local host.
 -->
 <script lang="ts">
-	import { boot } from '#lib/motion/boot.svelte.ts';
-	import { createMorph, blobRadius } from '#lib/motion/morph.ts';
+	import CopyLine from '#lib/components/CopyLine.svelte';
 
 	let { open = false }: { open?: boolean } = $props();
-
-	const morph = createMorph(0);
-	let hovering = $state(false);
-
-	// Resolves once as the preloader lifts, so first-time visitors see the settle; after that it
-	// follows the pointer.
-	let intro = $state(false);
-	$effect(() => {
-		if (!boot.ready) return;
-		intro = true;
-		const t = setTimeout(() => (intro = false), 2600);
-		return () => clearTimeout(t);
-	});
-	$effect(() => {
-		morph.target = intro || hovering ? 1 : 0.12;
-	});
-
-	const r = $derived(morph.current);
-
-	const rows = [
-		['method', 'eth_getBalance'],
-		['route', 'entry → 3 mix layers → exit'],
-		['batched', 'with 9 other reads'],
-		['standby', 'second route warm']
-	];
 </script>
 
 <div class="hero" class:open>
@@ -46,20 +18,15 @@
 			<a class="cta ghost" href="/benchmarks/">See the benchmark</a>
 		</div>
 
-		<div
-			class="card"
-			role="img"
-			aria-label="A request leaving through the mixnet and coming back as one answer"
-			style:border-radius={blobRadius(r)}
-			style:--r={r}
-			onpointerenter={() => (hovering = true)}
-			onpointerleave={() => (hovering = false)}
-		>
-			{#each rows as [k, v], i (k)}
-				<div class="row" style:--i={i}>
-					<span class="k">{k}</span><span class="v">{v}</span>
-				</div>
-			{/each}
+		<div class="install">
+			<p class="step">Run it on your machine</p>
+			<CopyLine text="curl -fsSL https://atmos.xavio.dev/install.sh | sh" />
+			<p class="step">Then add this to MetaMask as a Sepolia network</p>
+			<CopyLine text="http://127.0.0.1:8545/11155111" />
+			<p class="note">
+				The repository is private for now; the installer works once it's public.
+				<a href="/docs/install/">Install guide</a>
+			</p>
 		</div>
 	</div>
 
@@ -77,11 +44,13 @@
 		z-index: 1;
 		height: 100%;
 		display: grid;
+		grid-template-columns: minmax(0, 1fr);
 		place-items: center;
 		padding: clamp(24px, 4vw, 56px);
 	}
 	.block {
-		width: min(90%, 560px);
+		width: min(100%, 560px);
+		min-width: 0;
 		display: flex;
 		flex-direction: column;
 		align-items: center;
@@ -143,37 +112,31 @@
 		background: color-mix(in srgb, var(--surface-0) 75%, transparent);
 	}
 
-	.card {
+	.install {
 		margin-top: clamp(28px, 4vw, 44px);
-		width: min(100%, 380px);
-		padding: 18px 22px;
-		text-align: left;
-		background: color-mix(in srgb, var(--surface-0) 70%, transparent);
-		border: 1px solid var(--hairline);
-		backdrop-filter: blur(14px);
-		-webkit-backdrop-filter: blur(14px);
-		cursor: default;
-	}
-	.row {
+		width: min(100%, 540px);
 		display: flex;
-		justify-content: space-between;
-		gap: 16px;
-		padding: 5px 0;
-		font: 400 0.8rem/1.4 var(--font-body);
-		/* rows drift apart and blur while the card is a blob, and settle into line as it resolves */
-		opacity: calc(0.25 + var(--r) * 0.75);
-		filter: blur(calc((1 - var(--r)) * 3px));
-		transform: translateX(calc((1 - var(--r)) * (var(--i) - 1.5) * 14px));
+		flex-direction: column;
+		gap: 8px;
+		text-align: left;
 	}
-	.row + .row {
-		border-top: 1px solid color-mix(in srgb, var(--hairline) calc(var(--r) * 100%), transparent);
+	.step {
+		margin: 6px 0 0;
+		font: 600 0.8rem/1.3 var(--font-body);
+		color: var(--ink-1);
 	}
-	.k {
+	.note {
+		margin: 4px 0 0;
+		font: 400 0.76rem/1.5 var(--font-body);
 		color: var(--ink-2);
-		font-size: 0.74rem;
 	}
-	.v {
-		color: var(--ink-0);
+	.note a {
+		color: var(--accent);
+		font-weight: 600;
+		white-space: nowrap;
+	}
+	.install :global(.line) {
+		margin: 0;
 	}
 
 	.essentials {
@@ -198,8 +161,8 @@
 		color: var(--accent);
 	}
 
-	/* half-width lander: the card would crowd the CTAs */
-	.hero.open .card {
+	/* half-width lander: the install block would crowd the CTAs */
+	.hero.open .install {
 		display: none;
 	}
 
@@ -216,8 +179,8 @@
 		.hero.open .mark {
 			font-size: 2.4rem;
 		}
-		.card {
-			display: none;
+		.install {
+			margin-top: 24px;
 		}
 	}
 </style>

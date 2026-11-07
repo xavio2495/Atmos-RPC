@@ -7,17 +7,22 @@
 	import { boot } from '#lib/motion/boot.svelte.ts';
 	import ThemeToggle from '#lib/components/ThemeToggle.svelte';
 
+	// SDK and Install are shortcuts into the docs; Compare is linked from the lander's footer.
 	const links = [
 		{ href: '/how-it-works/', label: 'How it works' },
-		{ href: '/compare/', label: 'Compare' },
 		{ href: '/benchmarks/', label: 'Benchmarks' },
 		{ href: '/demo/', label: 'Demo' },
+		{ href: '/docs/sdk/', label: 'SDK' },
+		{ href: '/docs/install/', label: 'Install' },
 		{ href: '/docs/', label: 'Docs', cta: true }
 	];
+	const shortcuts = links.filter((l) => l.href.startsWith('/docs/') && l.href !== '/docs/');
 
 	const path = $derived(page.url.pathname);
 	const isActive = (href: string) =>
-		href === '/docs/' ? path.startsWith('/docs/') : path === href;
+		href === '/docs/'
+			? path.startsWith('/docs/') && !shortcuts.some((l) => l.href === path)
+			: path === href;
 </script>
 
 <nav class="notch" class:in={boot.ready} aria-label="Primary">
