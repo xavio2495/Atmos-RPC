@@ -249,12 +249,12 @@ function hedgeDelay(latencies, lambdaMs) {
 //   workerHash, workerResolvers: the worker bundle to run and where to fetch it (default: the pinned
 //     Nym worker); with a custom hash and no resolvers, the resolvers are read from the specifier.
 //   nymApis: Nym directory APIs, tried in order. specifierRpc: the mainnet provider the specifier
-//     change-check asks, through the mixnet.
+//     change-check asks, through the mixnet. bulkLanes: how many separate routes carry bulk() calls.
 export async function createAtmosClient({
   bootstrapProvider, probeUrl, log = () => {}, Worker = AnonRpcWorker,
   hedgeLambdaMs = null, rotateMs = null, overflow = false, tunnel = {}, padBytes = 0,
   workerHash = NYM_WORKER_HASH, workerResolvers = workerHash === NYM_WORKER_HASH ? NYM_WORKER_RESOLVERS : null,
-  nymApis = NYM_APIS, specifierRpc = SPECIFIER_RPC,
+  nymApis = NYM_APIS, specifierRpc = SPECIFIER_RPC, bulkLanes = 1,
 }) {
   if (Array.isArray(nymApis) === false || nymApis.length === 0) throw new TypeError("nymApis must be a non-empty list");
   let directory = await loadBand(nymApis);
@@ -460,46 +460,48 @@ export async function createAtmosClient({
       if (typeof r?.result === "string" && r.result.toLowerCase() !== workerHash.toLowerCase()) log({ event: "specifier-changed", live: r.result });
     }, () => {});
 
-  // A separate route for large background fetches. A big reply holds its route's tunnel for
+  // Separate routes ("lanes") for large background fetches. A big reply holds its route's tunnel for
   // seconds, so on the wallet's route it would queue the wallet's calls behind it and trip the
-  // attempt timeout into needless failovers. Booted on first use; a stalled lane is replaced.
-  let bulkRoute = null;
-  let bulkBooting = null;
-  function bulkLane() {
-    if (bulkRoute) return Promise.resolve(bulkRoute);
-    bulkBooting ??= bootRoute()
+  // attempt timeout into needless failovers. Each lane boots on first use; a stalled one is replaced.
+  // Calls go round-robin over `bulkLanes` lanes, so two lanes carry about twice the data.
+  const lanes = Array.from({ length: Math.max(1, bulkLanes) }, () => ({ route: null, booting: null, queues: new Map() }));
+  let nextLane = 0;
+  function laneRoute(lane) {
+    if (lane.route) return Promise.resolve(lane.route);
+    lane.booting ??= bootRoute()
       .then((r) => {
         if (closed) { r.close(); throw new Error("client closed"); }
-        return (bulkRoute = r);
+        return (lane.route = r);
       })
-      .finally(() => { bulkBooting = null; });
-    return bulkBooting;
+      .finally(() => { lane.booting = null; });
+    return lane.booting;
   }
-  // Per URL: one bulk call in flight, sent alone (a batch of large replies times out as a whole),
-  // and only the newest waiting call kept; an older waiting call is superseded. Head-following
+  // Per lane and URL: one bulk call in flight, sent alone (a batch of large replies times out as a
+  // whole), and only the newest waiting call kept; an older waiting call is superseded. Head-following
   // callers want the latest block, so piling up stale fetches only delays it.
-  const bulkQueues = new Map();
-  async function sendBulk(url, q, body) {
+  async function sendBulk(lane, url, q, body) {
     q.busy = true;
     let route;
     try {
-      route = await bulkLane();
+      route = await laneRoute(lane);
       return await withTimeout(postJson(route.worker, url, body, padBytes), BULK_TIMEOUT_MS, "bulk");
     } catch (e) {
-      if (e?.message === "bulk timeout" && route && bulkRoute === route) { bulkRoute = null; route.close(); }
+      if (e?.message === "bulk timeout" && route && lane.route === route) { lane.route = null; route.close(); }
       throw e;
     } finally {
       q.busy = false;
       const next = q.next;
       q.next = null;
-      if (next) sendBulk(url, q, next.body).then(next.resolve, next.reject);
+      if (next) sendBulk(lane, url, q, next.body).then(next.resolve, next.reject);
     }
   }
   function bulk(url, body) {
     if (Array.isArray(body)) return Promise.reject(new TypeError("send JSON-RPC calls one at a time; batching is automatic"));
-    let q = bulkQueues.get(url);
-    if (!q) bulkQueues.set(url, (q = { busy: false, next: null }));
-    if (!q.busy) return sendBulk(url, q, body);
+    const lane = lanes[nextLane];
+    nextLane = (nextLane + 1) % lanes.length;
+    let q = lane.queues.get(url);
+    if (!q) lane.queues.set(url, (q = { busy: false, next: null }));
+    if (!q.busy) return sendBulk(lane, url, q, body);
     q.next?.reject(new Error("bulk superseded"));
     return new Promise((resolve, reject) => { q.next = { body, resolve, reject }; });
   }
@@ -516,7 +518,7 @@ export async function createAtmosClient({
       closed = true;
       clearTimeout(rotation);
       clearTimeout(standbyRetry);
-      bulkRoute?.close();
+      lanes.forEach((l) => l.route?.close());
       primary.close();
       secondary?.close();
       retiring.forEach((r) => r.close());

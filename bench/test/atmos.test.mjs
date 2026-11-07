@@ -323,6 +323,23 @@ Object.assign(audit, {
     c.close();
   },
 });
+Object.assign(audit, {
+  async "BAL: bulkLanes 2 carries two fetches at once on two routes"() {
+    const { c } = await client({ bulkLanes: 2 });
+    FakeWorker.slow = { eth_getBlockAccessList: 800 };
+    await Promise.all([c.bulk(URL_A, rpc(0, "eth_blockNumber"))]); // lane 1 boots
+    await Promise.all([c.bulk(URL_A, rpc(0, "eth_blockNumber"))]); // lane 2 boots
+    const t = performance.now();
+    const results = await Promise.all([1, 2].map((n) => c.bulk(URL_A, rpc(n, "eth_getBlockAccessList", [`0x${n}`])).then((r) => r.result)));
+    const ms = performance.now() - t;
+    FakeWorker.slow = {};
+    assert.deepEqual(results, ['eth_getBlockAccessList:["0x1"]', 'eth_getBlockAccessList:["0x2"]']);
+    assert.ok(ms < 1_400, `two fetches took ${Math.round(ms)} ms, so they ran in parallel`);
+    const carriers = workers.filter((w) => w.posts.some((p) => p.body.includes("eth_getBlockAccessList")));
+    assert.equal(carriers.length, 2);
+    c.close();
+  },
+});
 const withCap = (p, ms) => Promise.race([p, sleep(ms).then(() => { throw new Error(`no answer in ${ms} ms`); })]);
 if (!process.argv.includes("--no-audit")) Object.assign(tests, audit);
 
