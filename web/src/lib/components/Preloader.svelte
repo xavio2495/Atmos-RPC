@@ -1,6 +1,6 @@
 <!--
-  Preloader: the wordmark set at the same size and centre as the lander's, so when it fades the
-  mark reads as staying put while the sky resolves under it. Below it the pixel arrow fills in
+  Preloader: the wordmark placed exactly over the lander's own (measured from the page, same
+  font and size), so when it fades the mark stays put while the display resolves under it. Below it the pixel arrow fills in
   cell by cell as the progress runs. Holds for webfonts, then releases the notches
   (boot.ready). Shows once; the layout persists across client navigations.
 -->
@@ -10,6 +10,25 @@
 
 	let progress = $state(0);
 	let done = $state(false);
+	let spot = $state<{ left: number; top: number; size: string } | null>(null);
+
+	// track where the lander's wordmark is drawn, so this one sits on it to the pixel
+	$effect(() => {
+		const target = document.querySelector('.hero .mark');
+		if (!target) return;
+		const place = () => {
+			const r = target.getBoundingClientRect();
+			spot = { left: r.left, top: r.top, size: getComputedStyle(target).fontSize };
+		};
+		const ro = new ResizeObserver(place);
+		ro.observe(target);
+		document.fonts?.ready.then(place);
+		addEventListener('resize', place);
+		return () => {
+			ro.disconnect();
+			removeEventListener('resize', place);
+		};
+	});
 	const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
 
 	// The arrow mark, 9 × 10 cells: # is solid, 3/2/1 fade into the hollow.
@@ -54,7 +73,13 @@
 
 {#if !done}
 	<div class="preloader" out:fade={{ duration: 640 }}>
-		<span class="mark">atmos</span>
+		<span
+			class="mark"
+			class:placed={spot}
+			style:left={spot ? `${spot.left}px` : null}
+			style:top={spot ? `${spot.top}px` : null}
+			style:font-size={spot?.size}>atmos</span
+		>
 		<svg class="arrow" viewBox="0 0 90 100" aria-hidden="true">
 			<defs>
 				<linearGradient
@@ -93,11 +118,18 @@
 		display: grid;
 		place-items: center;
 	}
+	/* same font, size and spacing as the lander's .mark */
 	.mark {
+		position: fixed;
+		margin: 0;
+		white-space: nowrap;
 		font: 400 clamp(2.8rem, 7.4vw, 5.8rem) / 1 var(--font-title);
 		letter-spacing: 0.04em;
 		color: var(--ink-0);
-		transform: translateY(-6dvh);
+		opacity: 0;
+	}
+	.mark.placed {
+		opacity: 1;
 	}
 	.arrow {
 		position: absolute;

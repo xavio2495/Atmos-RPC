@@ -12,8 +12,6 @@
 
 <CopyLine text="curl -fsSL https://atmos.xavio.dev/install.sh | sh" />
 
-<div class="callout"><p><strong>The repository is private for now.</strong> The installer clones it, so until it is public the clone needs your GitHub credentials (an SSH key, or <code>gh auth login</code>), or set <code>ATMOS_REPO</code> to a copy you can reach.</p></div>
-
 ## Requirements
 
 - Linux or macOS, with `git`, `npm` and **Node 24 or newer**.

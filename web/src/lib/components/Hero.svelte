@@ -24,8 +24,7 @@
 			<p class="step">Then add this to MetaMask as a Sepolia network</p>
 			<CopyLine text="http://127.0.0.1:8545/11155111" />
 			<p class="note">
-				The repository is private for now; the installer works once it's public.
-				<a href="/docs/install/">Install guide</a>
+				Needs Node 24 or newer. <a href="/docs/install/">Install guide</a>
 			</p>
 		</div>
 	</div>
@@ -35,6 +34,8 @@
 		<a href="/how-it-works/">How it works</a>
 		<a href="/llms.txt" data-sveltekit-reload>llms.txt</a>
 		<a href="https://ethereum.github.io/anon-rpc/" rel="external">anon-rpc spec</a>
+		<a href="/about/">About</a>
+		<a href="https://github.com/xavio2495/Atmos-RPC" rel="external">GitHub</a>
 	</nav>
 </div>
 

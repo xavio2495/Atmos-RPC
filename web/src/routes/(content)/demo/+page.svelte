@@ -12,8 +12,16 @@
 		close(): void;
 		ready: Promise<void>;
 	};
-	type Result = { label: string; value: string; ms: number; ok: boolean };
+	type Result = { value: string; ms: number; ok: boolean };
 	type Step = { key: string; label: string; done: boolean };
+	type Read = {
+		key: string;
+		label: string;
+		how: string;
+		usesAddress: boolean;
+		call: (a: string) => [string, unknown[]];
+		show: (r: string) => string;
+	};
 
 	const WETH = '0xfff9976782d46cc05630d1f6ebab18b2324d6b14';
 
@@ -25,11 +33,12 @@
 	let head = $state<number | null>(null);
 	let status = $state<ReturnType<Provider['status']> | null>(null);
 	let address = $state(WETH);
-	let results = $state<Result[]>([]);
+	let results = $state<Record<string, Result>>({});
 	let events = $state<string[]>([]);
 	let error = $state('');
-	let pending = $state('');
+	let pending = $state<Record<string, boolean>>({});
 	let routed = $state(false);
+	let retry = $state('');
 	let provider: Provider | null = null;
 	// bumped by every start and stop, so a stopped run's late events and errors are ignored
 	let generation = 0;
@@ -42,18 +51,54 @@
 	const pad = (a: string) => a.toLowerCase().replace(/^0x/, '').padStart(64, '0');
 
 	const steps = $derived<Step[]>([
-		{ key: 'route', label: 'Join the mixnet and prove a route', done: routed },
-		{ key: 'checkpoint', label: 'Pick a light-client checkpoint', done: Boolean(checkpoint) },
-		{ key: 'head', label: 'Verify the chain head', done: phase === 'ready' }
+		{ key: 'route', label: 'Route through the mixnet', done: routed },
+		{ key: 'checkpoint', label: 'Light-client checkpoint', done: Boolean(checkpoint) },
+		{ key: 'head', label: 'Verified chain head', done: phase === 'ready' }
 	]);
+
+	const reads: Read[] = [
+		{
+			key: 'balance',
+			label: 'Balance',
+			how: 'eth_getProof',
+			usesAddress: true,
+			call: (a) => ['eth_getBalance', [a, 'latest']],
+			show: (r) => eth(BigInt(r))
+		},
+		{
+			key: 'nonce',
+			label: 'Nonce',
+			how: 'eth_getProof',
+			usesAddress: true,
+			call: (a) => ['eth_getTransactionCount', [a, 'latest']],
+			show: (r) => String(Number(r))
+		},
+		{
+			key: 'weth',
+			label: 'WETH balance',
+			how: 'eth_call in a local EVM',
+			usesAddress: true,
+			call: (a) => ['eth_call', [{ to: WETH, data: '0x70a08231' + pad(a) }, 'latest']],
+			show: (r) => eth(BigInt(r))
+		},
+		{
+			key: 'block',
+			label: 'Latest block',
+			how: 'the verified head',
+			usesAddress: false,
+			call: () => ['eth_blockNumber', []],
+			show: (r) => Number(r).toLocaleString('en')
+		}
+	];
 
 	async function start() {
 		phase = 'booting';
-		results = [];
+		results = {};
 		events = [];
 		error = '';
 		checkpoint = '';
 		routed = false;
+		retry = '';
 		elapsed = 0;
 		const id = ++generation;
 		const t0 = Date.now();
@@ -66,7 +111,13 @@
 				if (id !== generation) return;
 				if (e.event === 'checkpoint') checkpoint = String(e.root);
 				if (e.event === 'route-accepted') routed = true;
-				events = [`${Math.round((Date.now() - t0) / 1000)} s  ${e.event}`, ...events].slice(0, 30);
+				// the SDK keeps retrying a failed start; say so rather than look stuck
+				if (e.event === 'start-failed') retry = `attempt ${Number(e.attempt) + 1} failed, retrying`;
+				const why = e.reason ? `: ${e.reason}` : '';
+				events = [`${Math.round((Date.now() - t0) / 1000)} s  ${e.event}${why}`, ...events].slice(
+					0,
+					30
+				);
 			}
 		}) as Provider;
 		try {
@@ -92,34 +143,32 @@
 		status = provider.status();
 	}
 
-	async function run(
-		label: string,
-		method: string,
-		params: unknown[],
-		show: (r: string) => string
-	) {
-		if (!provider || pending) return;
-		pending = label;
+	// each read has one tile; running it again replaces the tile's answer
+	async function run(read: Read) {
+		if (!provider || pending[read.key]) return;
+		pending[read.key] = true;
+		const [method, params] = read.call(address.trim());
 		const t = performance.now();
+		let result: Result;
 		try {
 			const r = (await provider.request({ method, params })) as string;
-			results = [
-				{ label, value: show(r), ms: Math.round(performance.now() - t), ok: true },
-				...results
-			];
+			result = { value: read.show(r), ms: Math.round(performance.now() - t), ok: true };
 		} catch (e) {
-			results = [
-				{
-					label,
-					value: String((e as Error)?.message ?? e),
-					ms: Math.round(performance.now() - t),
-					ok: false
-				},
-				...results
-			];
+			result = {
+				value: String((e as Error)?.message ?? e),
+				ms: Math.round(performance.now() - t),
+				ok: false
+			};
 		}
-		pending = '';
-		status = provider?.status() ?? status;
+		pending[read.key] = false;
+		if (!provider) return;
+		results[read.key] = result;
+		status = provider.status();
+	}
+
+	// answers for the old address no longer apply
+	function changeAddress() {
+		for (const r of reads) if (r.usesAddress) delete results[r.key];
 	}
 
 	function clearTimers() {
@@ -135,7 +184,7 @@
 		phase = 'idle';
 		head = null;
 		status = null;
-		pending = '';
+		pending = {};
 	}
 
 	const validAddress = $derived(/^0x[0-9a-fA-F]{40}$/.test(address.trim()));
@@ -149,158 +198,139 @@
 	);
 
 	onDestroy(stop);
+
+	const live = $derived(phase === 'ready');
+	const stateLabel = $derived(
+		{ idle: 'Not started', booting: 'Starting', ready: 'Connected', failed: 'Did not start' }[phase]
+	);
+	const stateDetail = $derived(
+		phase === 'booting'
+			? `${elapsed} s${retry ? ` · ${retry}` : ''}`
+			: phase === 'ready'
+				? `head ${head?.toLocaleString('en') ?? '…'}`
+				: phase === 'failed'
+					? error
+					: 'takes 15 to 70 seconds'
+	);
 </script>
 
 <svelte:head>
 	<title>Demo · Atmos</title>
 </svelte:head>
 
-<h1>Verified Sepolia reads from this tab</h1>
+<h1>Live demo</h1>
 <p class="lede">
-	This page starts the Atmos SDK in your browser. Every RPC call leaves through the Nym mixnet from
-	anon-rpc's sandboxed worker, and each answer is checked against a light-client head before it is
-	shown. No Atmos server is involved.
+	Atmos running in this tab. Every read crosses the Nym mixnet from anon-rpc's sandboxed worker and
+	is proven against a light client before it is shown. No Atmos server is involved.
 </p>
 
-<section class="console" aria-live="polite">
-	{#if phase === 'idle' || phase === 'failed'}
-		{#if phase === 'failed'}
-			<p class="callout warn"><strong>Atmos did not start.</strong> {error}</p>
-		{/if}
-		<label class="option">
-			<input type="checkbox" bind:checked={bal} />
-			<span>
-				<strong>Keep read accounts current from block access lists</strong> (EIP-7928)
-				<small
-					>After the first proof, an account is updated from each block's verified access list,
-					which every client fetches alike, so reading it again names nothing to a provider. Costs
-					one list per block (70–160 KB).</small
-				>
-			</span>
-		</label>
-		<label class="option">
-			<input type="checkbox" bind:checked={shape} />
-			<span>
-				<strong>Constant-rate schedule</strong>
-				<small
-					>Calls leave on a fixed clock with dummies in the gaps. Slower: up to 4 s per read.</small
-				>
-			</span>
-		</label>
-		<div class="row">
+<section class="app" aria-label="Atmos demo">
+	<div class="top">
+		<p class="state" aria-live="polite">
+			<span class="dot {phase}" aria-hidden="true"></span>
+			<strong>{stateLabel}</strong>
+			<span class="detail">{stateDetail}</span>
+		</p>
+		{#if phase === 'booting' || phase === 'ready'}
+			<button class="btn" onclick={stop}>Stop</button>
+		{:else}
 			<button class="btn primary" onclick={start}
 				>{phase === 'failed' ? 'Try again' : 'Start Atmos'}</button
 			>
-			<span class="note"
-				>Takes 15 to 70 seconds. The worker downloads about 10 MB, then joins the mixnet. Only the
-				Nym directory API and your entry gateway see your IP; the RPC providers see a Nym exit.</span
+		{/if}
+	</div>
+
+	<div class="settings">
+		{#each [{ label: 'Access-list updates', note: 'EIP-7928 · repeat reads name nothing', get: () => bal, set: (v: boolean) => (bal = v) }, { label: 'Constant-rate schedule', note: 'fixed clock with dummies · up to 4 s a read', get: () => shape, set: (v: boolean) => (shape = v) }] as o (o.label)}
+			<button
+				class="switch"
+				role="switch"
+				aria-checked={o.get()}
+				disabled={phase === 'booting' || phase === 'ready'}
+				onclick={() => o.set(!o.get())}
 			>
-		</div>
-	{:else if phase === 'booting'}
-		<div class="row head">
-			<strong>Starting, {elapsed} s</strong>
-			<button class="btn ghost" onclick={stop}>Stop</button>
-		</div>
-		<ol class="steps">
-			{#each steps as s (s.key)}
-				<li class:done={s.done}><span class="cell" aria-hidden="true"></span>{s.label}</li>
-			{/each}
-		</ol>
-	{:else}
-		<div class="row head">
-			<span class="live"
-				><span class="cell" aria-hidden="true"></span>Verified head
-				<strong>{head ?? '…'}</strong></span
+				<span class="track" aria-hidden="true"><span class="knob"></span></span>
+				<span class="text"><strong>{o.label}</strong><small>{o.note}</small></span>
+			</button>
+		{/each}
+	</div>
+
+	<ol class="steps" class:on={phase !== 'idle'}>
+		{#each steps as st (st.key)}
+			<li class:done={st.done} class:busy={phase === 'booting' && !st.done}>
+				<span class="cell" aria-hidden="true"></span>{st.label}
+			</li>
+		{/each}
+	</ol>
+
+	<label class="field">
+		<span>Address</span>
+		<input
+			class="address"
+			bind:value={address}
+			oninput={changeAddress}
+			spellcheck="false"
+			aria-invalid={!validAddress}
+		/>
+	</label>
+	{#if !validAddress}<p class="hint warn">Enter a 0x address of 40 hex characters.</p>{/if}
+
+	<div class="tiles">
+		{#each reads as r (r.key)}
+			{@const res = results[r.key]}
+			<button
+				class="read"
+				class:failed={res && !res.ok}
+				disabled={!live || pending[r.key] || (r.usesAddress && !validAddress)}
+				onclick={() => run(r)}
 			>
-			<button class="btn ghost" onclick={stop}>Stop</button>
-		</div>
-		<dl class="facts">
+				<span class="name">{r.label}</span>
+				<span class="value">{pending[r.key] ? 'reading…' : (res?.value ?? '–')}</span>
+				<span class="meta"
+					>{res && !pending[r.key]
+						? res.ms < 5
+							? 'no request · already verified'
+							: `${res.ms.toLocaleString('en')} ms · ${r.how}`
+						: live
+							? `Read · ${r.how}`
+							: r.how}</span
+				>
+			</button>
+		{/each}
+	</div>
+
+	<dl class="facts">
+		<div>
 			<dt>Checkpoint</dt>
-			<dd><code>{checkpoint ? `${checkpoint.slice(0, 18)}…` : '–'}</code></dd>
+			<dd><code>{checkpoint ? `${checkpoint.slice(0, 14)}…` : '–'}</code></dd>
+		</div>
+		<div>
 			<dt>Answers</dt>
 			<dd>{counts || '–'}</dd>
-			{#if status?.following}
+		</div>
+		{#if status?.following}
+			<div>
 				<dt>Access lists</dt>
 				<dd>
-					{status.following.accounts} accounts kept current, at block {status.following
-						.block}{status.following.behind != null
-						? ` (${status.following.behind} behind${status.following.behind > 2 ? ': reads use proofs until it catches up' : ''})`
+					{status.following.accounts} accounts at block {status.following.block}{status.following
+						.behind != null
+						? `, ${status.following.behind} behind${status.following.behind > 2 ? ' (proofs until it catches up)' : ''}`
 						: ''}
 				</dd>
-			{/if}
-		</dl>
-
-		<label class="field">
-			<span>Address</span>
-			<input class="address" bind:value={address} spellcheck="false" aria-invalid={!validAddress} />
-		</label>
-		{#if !validAddress}<p class="hint">Enter a 0x address of 40 hex characters.</p>{/if}
-		<div class="actions">
-			<button
-				class="btn"
-				disabled={!!pending || !validAddress}
-				onclick={() =>
-					run('Balance', 'eth_getBalance', [address.trim(), 'latest'], (r) => eth(BigInt(r)))}
-				>Balance</button
-			>
-			<button
-				class="btn"
-				disabled={!!pending || !validAddress}
-				onclick={() =>
-					run('Nonce', 'eth_getTransactionCount', [address.trim(), 'latest'], (r) =>
-						String(Number(r))
-					)}>Nonce</button
-			>
-			<button
-				class="btn"
-				disabled={!!pending || !validAddress}
-				onclick={() =>
-					run(
-						'WETH balance',
-						'eth_call',
-						[{ to: WETH, data: '0x70a08231' + pad(address.trim()) }, 'latest'],
-						(r) => eth(BigInt(r))
-					)}>WETH balance</button
-			>
-			<button
-				class="btn"
-				disabled={!!pending}
-				onclick={() => run('Latest block', 'eth_blockNumber', [], (r) => String(Number(r)))}
-				>Latest block</button
-			>
-		</div>
-
-		{#if pending || results.length}
-			<table class="results">
-				<thead><tr><th>Read</th><th>Answer</th><th class="num">Time</th></tr></thead>
-				<tbody>
-					{#if pending}
-						<tr class="pending"><td>{pending}</td><td>reading through the mixnet…</td><td></td></tr>
-					{/if}
-					{#each results as r, i (i)}
-						<tr class:failed={!r.ok}>
-							<td>{r.label}</td>
-							<td class="answer">{r.value}</td>
-							<td class="num">{r.ms < 5 ? 'no request' : `${r.ms} ms`}</td>
-						</tr>
-					{/each}
-				</tbody>
-			</table>
-			<p class="hint">
-				Balances and nonces are checked with <code>eth_getProof</code> against the verified head; the
-				WETH balance runs in a local EVM on proven state. A repeat read at the same block, and the latest
-				block number, are answered from what is already verified, with no request.
-			</p>
+			</div>
 		{/if}
-	{/if}
+	</dl>
 
-	{#if events.length}
-		<details class="log">
-			<summary>Event log ({events.length})</summary>
-			<pre>{events.join('\n')}</pre>
-		</details>
-	{/if}
+	<details class="log">
+		<summary>Event log{events.length ? ` (${events.length})` : ''}</summary>
+		<pre>{events.length ? events.join('\n') : 'Nothing yet.'}</pre>
+	</details>
 </section>
+
+<p class="small">
+	Only the Nym directory API and your entry gateway see your IP; the RPC providers see a Nym exit.
+	The worker download is about 10 MB.
+</p>
 
 <h2>Use it in your app</h2>
 <pre><code
@@ -315,110 +345,168 @@ await client.getBalance({'{'} address {'}'});</code
 <p>See the <a href="/docs/sdk/">SDK docs</a> for the options and what each one costs.</p>
 
 <style>
-	.console {
-		margin: 0 0 2.4em;
-		padding: 20px 22px;
-		background: var(--surface-2);
+	.app {
+		margin: 0 0 1em;
 		border: 1px solid var(--hairline);
 		border-radius: var(--radius-md);
+		background: var(--surface-2);
+		overflow: hidden;
 	}
-	.option {
+	.app > * {
+		padding-left: 20px;
+		padding-right: 20px;
+	}
+	.top {
 		display: flex;
-		gap: 12px;
-		align-items: flex-start;
-		margin: 0 0 14px;
-		cursor: pointer;
-	}
-	.option input {
-		margin-top: 0.3em;
-		accent-color: var(--accent);
-	}
-	.option small {
-		display: block;
-		margin-top: 2px;
-		color: var(--ink-1);
-		font-size: 0.8rem;
-		line-height: 1.5;
-	}
-	.row {
-		display: flex;
-		flex-wrap: wrap;
 		align-items: center;
-		gap: 12px 16px;
-	}
-	.row.head {
 		justify-content: space-between;
+		gap: 12px;
+		padding-top: 14px;
+		padding-bottom: 14px;
+		border-bottom: 1px solid var(--hairline);
 	}
-	.note,
-	.hint {
-		flex: 1 1 18rem;
-		margin: 0;
-		font-size: 0.8rem;
-		line-height: 1.5;
-		color: var(--ink-1);
-	}
-	.hint {
-		margin-top: 10px;
-	}
-	.steps {
-		margin: 16px 0 0;
-		padding: 0;
-		list-style: none;
-	}
-	.steps li {
+	.state {
 		display: flex;
-		align-items: center;
-		gap: 10px;
-		margin: 8px 0;
-		color: var(--ink-2);
+		align-items: baseline;
+		flex-wrap: wrap;
+		gap: 4px 10px;
+		min-width: 0;
+		margin: 0;
 	}
-	.steps li.done {
-		color: var(--ink-0);
+	.detail {
+		color: var(--ink-1);
+		font-size: 0.86rem;
+		font-variant-numeric: tabular-nums;
+		overflow-wrap: anywhere;
 	}
-	/* one cell of the pixel mark: hollow while waiting, filled when done */
-	.cell {
-		flex: none;
+	.dot {
+		align-self: center;
 		width: 10px;
 		height: 10px;
 		border-radius: 2px;
-		border: 1.5px solid currentColor;
+		background: var(--ink-2);
 	}
-	.steps li:not(.done) .cell {
+	.dot.booting {
+		background: var(--accent);
 		animation: blink 1.2s steps(2) infinite;
 	}
-	.done .cell,
-	.live .cell {
+	.dot.ready {
 		background: var(--accent);
-		border-color: var(--accent);
 	}
-	.live {
-		display: inline-flex;
-		align-items: center;
-		gap: 10px;
+	.dot.failed {
+		background: var(--status-error);
 	}
 	@keyframes blink {
 		50% {
 			opacity: 0.3;
 		}
 	}
-	.facts {
+
+	.settings {
 		display: grid;
-		grid-template-columns: max-content 1fr;
-		gap: 6px 18px;
-		margin: 16px 0 20px;
-		font-size: 0.86rem;
+		grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+		gap: 8px 20px;
+		padding-top: 16px;
 	}
-	.facts dt {
+	.switch {
+		display: flex;
+		align-items: flex-start;
+		gap: 12px;
+		padding: 0;
+		border: none;
+		background: none;
+		text-align: left;
+		cursor: pointer;
+	}
+	.switch:disabled {
+		cursor: default;
+		opacity: 0.55;
+	}
+	.track {
+		flex: none;
+		position: relative;
+		width: 34px;
+		height: 20px;
+		margin-top: 2px;
+		border-radius: 6px;
+		background: var(--surface-1);
+		border: 1px solid var(--hairline);
+		transition: background 160ms ease;
+	}
+	.knob {
+		position: absolute;
+		top: 3px;
+		left: 3px;
+		width: 12px;
+		height: 12px;
+		border-radius: 3px;
+		background: var(--ink-2);
+		transition:
+			transform 180ms ease,
+			background 160ms ease;
+	}
+	.switch[aria-checked='true'] .track {
+		background: var(--accent-tint);
+		border-color: var(--accent);
+	}
+	.switch[aria-checked='true'] .knob {
+		transform: translateX(14px);
+		background: var(--accent);
+	}
+	.text {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		font-size: 0.88rem;
+		line-height: 1.3;
+	}
+	.text small {
 		color: var(--ink-1);
+		font-size: 0.76rem;
 	}
-	.facts dd {
+
+	.steps {
+		display: grid;
+		grid-template-columns: repeat(3, 1fr);
+		gap: 8px;
+		margin: 16px 0 0;
+		list-style: none;
+		font-size: 0.78rem;
+		color: var(--ink-2);
+	}
+	.steps li {
+		display: flex;
+		align-items: center;
+		gap: 8px;
 		margin: 0;
+		padding-top: 10px;
+		border-top: 2px solid var(--surface-1);
 	}
+	.steps li.done {
+		color: var(--ink-0);
+		border-top-color: var(--accent);
+	}
+	.cell {
+		flex: none;
+		width: 9px;
+		height: 9px;
+		border-radius: 2px;
+		border: 1.5px solid currentColor;
+	}
+	.done .cell {
+		background: var(--accent);
+		border-color: var(--accent);
+	}
+	.busy .cell {
+		animation: blink 1.2s steps(2) infinite;
+	}
+
 	.field {
 		display: flex;
 		flex-direction: column;
 		gap: 6px;
-		font-size: 0.8rem;
+		padding-top: 20px;
+		font-size: 0.78rem;
 		font-weight: 600;
 		color: var(--ink-1);
 	}
@@ -431,43 +519,130 @@ await client.getBalance({'{'} address {'}'});</code
 		border: 1px solid var(--hairline);
 		border-radius: var(--radius-sm);
 	}
+	.address:focus {
+		outline: none;
+		border-color: var(--accent);
+	}
 	.address[aria-invalid='true'] {
 		border-color: var(--status-error);
 	}
-	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 8px;
-		margin-top: 12px;
+	.hint {
+		margin: 6px 0 0;
+		font-size: 0.76rem;
+		color: var(--ink-1);
 	}
-	.results {
-		margin-top: 18px;
-	}
-	.answer {
-		font-variant-numeric: tabular-nums;
-		word-break: break-all;
-	}
-	tr.pending td {
-		color: var(--ink-2);
-	}
-	tr.failed td {
+	.hint.warn {
 		color: var(--status-error);
 	}
-	.log {
-		margin-top: 18px;
+
+	.tiles {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 10px;
+		padding-top: 14px;
+	}
+	.read {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 6px;
+		min-width: 0;
+		padding: 14px 16px;
+		border: 1px solid var(--hairline);
+		border-radius: var(--radius-sm);
+		background: var(--surface-0);
+		color: var(--ink-0);
+		text-align: left;
+		cursor: pointer;
+		transition: border-color 160ms ease;
+	}
+	.read:hover:not(:disabled) {
+		border-color: var(--accent);
+	}
+	.read:disabled {
+		cursor: default;
+	}
+	.read:disabled .value,
+	.read:disabled .name {
+		opacity: 0.6;
+	}
+	.name {
+		font-size: 0.78rem;
+		font-weight: 600;
+		color: var(--ink-1);
+	}
+	.value {
+		max-width: 100%;
+		font-size: 1.15rem;
+		font-weight: 600;
+		font-variant-numeric: tabular-nums;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.meta {
+		font-size: 0.72rem;
+		color: var(--ink-2);
+	}
+	.read:not(:disabled) .meta {
+		color: var(--accent);
+	}
+	.read.failed .value {
+		font-size: 0.82rem;
+		white-space: normal;
+		color: var(--status-error);
+	}
+
+	.facts {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px 24px;
+		margin: 0;
+		padding-top: 16px;
 		font-size: 0.8rem;
+	}
+	.facts div {
+		display: flex;
+		gap: 8px;
+	}
+	.facts dt {
+		color: var(--ink-1);
+	}
+	.facts dd {
+		margin: 0;
+	}
+
+	.log {
+		margin-top: 16px;
+		padding-top: 12px;
+		padding-bottom: 12px;
+		border-top: 1px solid var(--hairline);
+		font-size: 0.78rem;
 	}
 	.log summary {
 		cursor: pointer;
 		color: var(--ink-1);
+		font-weight: 600;
 	}
 	.log pre {
-		margin: 8px 0 0;
-		max-height: 14rem;
+		margin: 10px 0 0;
+		height: 9rem;
 		overflow: auto;
 	}
+	.small {
+		font-size: 0.8rem;
+		color: var(--ink-1);
+	}
+
+	@media (max-width: 520px) {
+		.steps,
+		.tiles {
+			grid-template-columns: 1fr;
+		}
+	}
 	@media (prefers-reduced-motion: reduce) {
-		.steps li:not(.done) .cell {
+		.dot.booting,
+		.busy .cell {
 			animation: none;
 		}
 	}

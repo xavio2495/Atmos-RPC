@@ -46,7 +46,7 @@
 	--status-error: #c2412d;
 
 	--font-title:
-		'Dune Rise', 'Montserrat Variable', system-ui, sans-serif; /* the wordmark and titles */
+		'Dune Rise', 'Montserrat Variable', system-ui, sans-serif; /* the wordmark only */
 	--font-body: 'Montserrat Variable', system-ui, sans-serif;
 	--font-mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace; /* code only */
 

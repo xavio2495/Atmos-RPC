@@ -1,0 +1,35 @@
+<svelte:head>
+	<title>About · Atmos</title>
+</svelte:head>
+
+# About Atmos
+
+<p class="lede">Atmos is a faster, verified and more private client layer on top of anon-rpc, the standard for sending a wallet's Ethereum RPC calls through an anonymity network from inside a sandboxed, hash-pinned worker.</p>
+
+## Why
+
+An RPC provider sees your IP address and every address you read. anon-rpc hides the IP by routing calls through the Nym mixnet, but on its own it is slow for the way wallets work: a page load fires many reads at once, and each one waits on a fresh connection. Atmos keeps anon-rpc's worker and trust model, and works on speed, on checking answers, and on what a provider can still learn.
+
+## What is built
+
+- **The SDK**: an EIP-1193 provider for Sepolia that works with viem, ethers and wagmi, in the browser and in Node.
+- **The host**: a local server that gives wallets such as MetaMask an ordinary RPC URL, installed with one command.
+- **A Node harness** that runs the Nym worker in a V8 isolate, with no browser.
+- **Routing**: batching per provider, a probe before a route is trusted, and a warm standby route with failover.
+- **Verified reads**: answers checked against a light client, with `eth_call` run in a local EVM on proven state.
+- **A constant-rate schedule** that shapes outgoing requests.
+- **Access-list updates** (EIP-7928, experimental): accounts you have read are kept current from each block's access list, so reading them again names nothing to a provider.
+
+## What is not, yet
+
+- **Sepolia only.**
+- **The first answer is slow**: 15 to 70 seconds while the worker joins the mixnet and the chain head is verified.
+- **Providers still see what you ask for.** Proofs name the addresses you read. Access-list updates avoid that for repeat reads only while they keep pace with the chain.
+- **Shaping covers outgoing requests only.** Replies are not padded.
+- **Provider splitting**, so no single provider sees every address, is planned, not built.
+
+The [benchmarks](/benchmarks/) have the measurements, and [how it works](/how-it-works/) has the design.
+
+## Source
+
+The code is open: [github.com/xavio2495/Atmos-RPC](https://github.com/xavio2495/Atmos-RPC).

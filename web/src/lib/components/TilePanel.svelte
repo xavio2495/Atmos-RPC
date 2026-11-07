@@ -4,8 +4,15 @@
 -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import { afterNavigate } from '$app/navigation';
 
 	let { label, children }: { label: string; children: Snippet } = $props();
+	let body: HTMLDivElement;
+
+	// docs pages share one panel, so a new page must start at its top
+	afterNavigate(({ to, from }) => {
+		if (to?.url.pathname !== from?.url.pathname) body?.scrollTo(0, 0);
+	});
 </script>
 
 <section class="tile" aria-label={label}>
@@ -14,7 +21,7 @@
 			><span class="word">Close</span><span aria-hidden="true">×</span></a
 		>
 	</div>
-	<div class="tile-body">
+	<div class="tile-body" bind:this={body}>
 		{@render children()}
 	</div>
 </section>
