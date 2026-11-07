@@ -16,8 +16,8 @@
 	const path = $derived(page.url.pathname);
 	const open = $derived(path !== '/');
 	const key = $derived(path.startsWith('/docs/') ? '/docs/' : path);
-	// the deck is full-screen slides, outside the lander and its tiles
-	const deck = $derived(path.startsWith('/deck/'));
+	// the decks are full-screen slides, outside the lander and its tiles
+	const deck = $derived(path.startsWith('/deck/') || path.startsWith('/pitch/'));
 </script>
 
 <svelte:head>
