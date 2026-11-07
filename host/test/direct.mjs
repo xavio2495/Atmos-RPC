@@ -98,6 +98,48 @@ const code = await lying.request(U, { jsonrpc: "2.0", id: 1, method: "eth_getCod
 check(Boolean(code.error), `wrong code is rejected (${code.error?.message ?? "accepted"})`);
 lying.close(); forged?.close?.();
 
+// EIP-7928: once proven, accounts are kept current from verified access lists, so
+// reading them again blocks later sends no proof; a tampered list is refused.
+{
+  const BAL = "https://ethereum-sepolia-rpc.publicnode.com";
+  let proofs = 0;
+  const events = [];
+  const counting = (u, b) => { if (b.method === "eth_getProof") proofs++; return post(u, b); };
+  const r = await createVerifiedReader({ request: counting, beaconGet: get, checkpoint, providers: [U], chain: SEPOLIA, accessLists: [BAL], log: (e) => events.push(e) });
+  // Busy accounts: the ones whose balance changed most in a recent block.
+  const recent = (await post(BAL, { jsonrpc: "2.0", id: 1, method: "eth_getBlockAccessList", params: ["latest"] })).result;
+  const busy = recent.filter((a) => a.balanceChanges.length).sort((a, b) => b.balanceChanges.length - a.balanceChanges.length).slice(0, 5).map((a) => a.address);
+  const read = (a) => r.request(U, { jsonrpc: "2.0", id: 1, method: "eth_getBalance", params: [a, "latest"] }).then((x) => x.result);
+  const first = [];
+  for (const a of busy) first.push(await read(a));
+  const warm = proofs;
+  const start = (await r.head()).number;
+  while ((await r.head()).number < start + 3) await new Promise((x) => setTimeout(x, 3000));
+  let same = 0, changed = 0;
+  const at = "0x" + (await r.head()).number.toString(16);
+  for (const [i, a] of busy.entries()) {
+    const mine = await read(a);
+    const theirs = (await post(BAL, { jsonrpc: "2.0", id: 1, method: "eth_getBalance", params: [a, at] })).result;
+    if (BigInt(mine) === BigInt(theirs)) same++;
+    if (mine !== first[i]) changed++;
+  }
+  const f = r.following();
+  check(proofs === warm && same === busy.length, `reads kept current by access lists: ${same}/${busy.length} equal the provider, ${changed} changed, ${proofs - warm} new proofs over ${f.block - start} blocks`);
+  r.close();
+
+  const tampered = await createVerifiedReader({
+    request: async (u, b) => { const x = await post(u, b); if (b.method === "eth_getBlockAccessList" && x.result?.[0]) x.result[0].storageReads = ["0x1"]; return x; },
+    beaconGet: get, checkpoint, providers: [U], chain: SEPOLIA, accessLists: [BAL], log: (e) => events.push(e),
+  });
+  await tampered.request(U, { jsonrpc: "2.0", id: 1, method: "eth_getBalance", params: [busy[0], "latest"] });
+  const s0 = (await tampered.head()).number;
+  while ((await tampered.head()).number < s0 + 1) await new Promise((x) => setTimeout(x, 3000));
+  const after = await tampered.request(U, { jsonrpc: "2.0", id: 1, method: "eth_getBalance", params: [busy[0], "latest"] });
+  const refused = events.some((e) => e.event === "access-list-failed" && /does not match header/.test(e.reason));
+  check(refused && after.result !== undefined, `a tampered access list is refused, and the read falls back to a proof (${refused ? "refused" : "accepted"})`);
+  tampered.close();
+}
+
 // Mainnet (Electra/Fulu head format): verified reads equal the provider's at the same block.
 {
   const { MAINNET } = await import("../../client/verify.js");

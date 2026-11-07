@@ -2,6 +2,7 @@ import { bls12_381 } from "@noble/curves/bls12-381";
 import { sha256 } from "@noble/hashes/sha2";
 import { keccak_256 } from "@noble/hashes/sha3";
 import { bytesToHex, hexToBytes, concatBytes } from "@noble/hashes/utils";
+import { createAccessListFollower } from "./bal.js";
 
 // Fork epochs and versions from Electra on. A later fork changes the signing domain,
 // so its heads fail to verify until it is added here. From Gloas the light-client
@@ -205,7 +206,9 @@ function trieGet(root, key, proof) {
 // `split`: each address's proofs go to one provider chosen from the address's hash,
 // falling back to the others only on failure, so no single provider sees every
 // address the wallet reads.
-export async function createVerifiedReader({ request, beaconGet, checkpoint, providers, chain = MAINNET, split = false, log = () => {} }) {
+// `accessLists`: providers serving EIP-7928 access lists. When given, proven accounts
+// are kept current from every block's verified list, so repeat reads name nothing.
+export async function createVerifiedReader({ request, beaconGet, checkpoint, providers, chain = MAINNET, split = false, accessLists = null, log = () => {} }) {
   // The first beacon request on a new route can fail in transit, which is not the
   // same as the checkpoint being unknown, so it is tried a few times.
   let boot, last;
@@ -279,8 +282,20 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
   // Open the connection to the first proof provider while the head is verified,
   // so the first reads don't pay for it.
   await Promise.all([currentHead(), request(providers[0], { jsonrpc: "2.0", id: 0, method: "eth_chainId", params: [] })]);
+  const follower = accessLists?.length
+    ? createAccessListFollower({
+        headerAt: headerByNumber,
+        fetchList: (hash) => onProviders({ jsonrpc: "2.0", id: 7, method: "eth_getBlockAccessList", params: [hash] }, (l) => l, accessLists),
+        maxGap: MAX_HEADER_WALK,
+        log,
+      })
+    : null;
+  const followHead = async () => {
+    if (follower && head) await follower.follow(head.number).catch((e) => log({ event: "access-list-failed", reason: String(e?.message ?? e).slice(0, 80) }));
+  };
+  // Every block's access list is fetched on the head clock, not when the wallet reads.
   const ticker = setInterval(() => {
-    refreshOnce().catch((e) => log({ event: "head-rejected", reason: String(e?.message ?? e).slice(0, 80) }));
+    refreshOnce().then(followHead, (e) => log({ event: "head-rejected", reason: String(e?.message ?? e).slice(0, 80) }));
   }, HEAD_REFRESH_MS);
   ticker.unref?.();
 
@@ -313,6 +328,12 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
 
   async function account(address, slots, head, withCode) {
     address = address.toLowerCase();
+    // A held account waits for the lists up to this head rather than being proven again.
+    if (follower?.holds(address)) {
+      await follower.follow(head.number).catch((e) => log({ event: "access-list-failed", reason: String(e?.message ?? e).slice(0, 80) }));
+      const held = follower.get(address, slots, withCode, head.number);
+      if (held) return held;
+    }
     if (cacheBlock !== head.number) {
       cacheBlock = head.number;
       cache.clear();
@@ -349,6 +370,7 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
       a.code ??= hit.code;
     }
     if (head.number === cacheBlock) cache.set(address, a);
+    follower?.seed(address, a, head.number);
     return a;
   }
 
@@ -429,6 +451,8 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
 
   return {
     close: () => clearInterval(ticker),
+    // How many accounts the access lists keep current, and at which block.
+    following: () => (follower ? { accounts: follower.size, block: follower.block } : null),
     request: verifiedRequest,
     head: currentHead,
     header: headerByNumber,
