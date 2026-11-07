@@ -55,7 +55,7 @@ The host is yours alone by default. It answers only at `127.0.0.1` or `localhost
 
 The host waits for a working route before it answers, which takes from about 15 seconds to two minutes. `GET /` reports the runtime, whether it is ready, and counts answers by kind.
 
-Set `ATMOS_SHAPE=1` to send every outgoing call on the constant-rate schedule. Every provider gets a fixed number of calls on a fixed clock from the moment the host starts, with dummy calls filling the empty places, so the count and size of what leaves stop showing when the wallet is active.
+Set `ATMOS_SHAPE=1` to send every outgoing call on the constant-rate schedule. Every provider gets a fixed number of calls on a fixed clock from the moment the host starts, with dummy calls filling the empty places, so the count and size of the requests that leave stop showing when the wallet is active.
 
 What it changes, measured on Sepolia: an observer of the host's outgoing traffic tried to tell 12-second windows of wallet activity from idle ones, using the best threshold chosen with hindsight. 50 % is chance; each figure was compared with 2,000 shuffles of the idle and busy labels.
 
@@ -65,6 +65,8 @@ What it changes, measured on Sepolia: an observer of the host's outgoing traffic
 | Shaping on | 52.1 % (chance) | 60.4 % (chance) | 50.0 % (chance) |
 
 In shaped mode every request body is also padded to 2 KB, so each one enters the mixnet at the same size; the observer's accuracy on bytes in the tunnel was 56.9 %, again chance.
+
+These figures cover requests only. Replies are not padded: they come from the provider at their own size, and through Nym a larger reply becomes more return packets at the entry gateway. A proof or an `eth_call` result can differ in size from a dummy's reply, so an observer of incoming traffic may still tell busy windows from idle ones. That has not been measured yet.
 
 What it costs:
 - **Latency:** about one slot per call, at most 4 s for reads and 8 s for proofs.

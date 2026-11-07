@@ -41,7 +41,7 @@ v1 wraps the stock browser harness. It needs no change to any network's worker.
 ### v2: verified and shaped
 
 - **Proof-checked reads (built).** A light client follows the sync committee's signatures to a trusted head. Balances, nonces, code and storage are checked with `eth_getProof` against that head's state root. `eth_call` runs locally on proven state, and receipts are checked against the block's receipts root. A lying exit or provider can cause a failure, never a wrong answer.
-- **Constant-rate traffic (built).** Padded batches leave on a fixed schedule with a random phase per session. In our model, that brings timing re-linkage down to chance.
+- **Constant-rate traffic (built).** Padded batches leave on a fixed schedule with a random phase per session. In our model, that brings timing re-linkage down to chance, and measured on outgoing requests an observer was at chance too. Replies are not padded, so incoming traffic is not covered.
 - **Provider splitting (not yet).** Each address read from one provider, on its own session, so no single provider sees the whole set.
 
 ### v3: the transport (planned)

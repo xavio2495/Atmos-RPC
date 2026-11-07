@@ -159,6 +159,8 @@
 <p>
 	An observer of the self-hosted endpoint's outgoing traffic tried to tell 12-second windows of
 	wallet activity from idle ones, with the best threshold chosen with hindsight. 50% is chance.
+	This covers outgoing requests only: replies are not padded, and incoming traffic has not been
+	measured.
 </p>
 <table>
 	<thead>

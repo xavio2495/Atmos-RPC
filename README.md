@@ -14,7 +14,7 @@ Measured on Cloud Run with headless sessions (full tables on the website's bench
 - **Speed:** a burst of ten parallel reads took 2.3–3.3 s with Atmos against 18.8 s to over 24 s with stock anon-rpc, across three regions, and Atmos answered 99–100 % of calls.
 - **Verified reads:** every read proof-checked, with a 3.55 s burst and 1.43 s p95 (europe-west1).
 - **No browser needed:** the Node harness runs the Nym worker at the same speed as headless Chromium, with the worker's hash pinned and its network limited to the Nym API and its entry gateway.
-- **Anonymity:** with the constant-rate schedule on, an observer of the outgoing traffic told busy from idle no better than chance.
+- **Anonymity:** with the constant-rate schedule on, an observer of the outgoing requests told busy from idle no better than chance. Replies are not padded, and incoming traffic has not been measured.
 
 ## Layout
 

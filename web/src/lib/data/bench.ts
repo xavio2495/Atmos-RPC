@@ -96,7 +96,7 @@ export const options: Measured[] = [
 	{ label: '15 s exit connect timeout', burstMs: 2640, p50Ms: 687, p95Ms: 1074, answeredPct: 100 }
 ];
 
-/** Observer accuracy (%) telling idle from busy 12 s windows of a host's outgoing traffic; 50 is chance. */
+/** Observer accuracy (%) telling idle from busy 12 s windows of a host's outgoing requests; 50 is chance. Replies not measured. */
 export const anonymity = [
 	{ label: 'Shaping off', requests: 98.6, bytes: 98.6, beacon: 51.4 },
 	{ label: 'Shaping on', requests: 52.1, bytes: 60.4, beacon: 50.0 }
