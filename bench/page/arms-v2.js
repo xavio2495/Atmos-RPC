@@ -37,9 +37,9 @@ export const v2Arms = ({ workload, bootstrapProvider }) => ({
   async N2V(opts, t0, out, clientOpts) {
     const { client, log } = await bootAtmos(opts, t0, out, bootstrapProvider, clientOpts);
     if (!client) return;
+    let reader;
     try {
       const beaconGet = (path) => client.fetch(BEACONS[0] + path).then((r) => r.json());
-      let reader;
       try {
         const checkpoint = await checkpointFor(opts, client);
         out.boot.checkpoint = checkpoint;
@@ -57,6 +57,8 @@ export const v2Arms = ({ workload, bootstrapProvider }) => ({
       });
       await workload(send, opts.url, opts.minutes, opts.rawTx, t0, out);
     } finally {
+      // The reader's head clock would otherwise keep fetching through the closed client.
+      reader?.close();
       client.close();
     }
   },
