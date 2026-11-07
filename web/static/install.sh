@@ -43,7 +43,7 @@ elif [ -e "$DIR" ] && [ -n "$(ls -A "$DIR" 2>/dev/null)" ]; then
 else
   say "Installing into $DIR"
   git clone -q --depth 1 --branch "$REF" --filter=blob:none --sparse "$REPO" "$DIR" ||
-    die "could not clone $REPO. While the repository is private, cloning needs your GitHub credentials (an SSH key, or 'gh auth login'), or set ATMOS_REPO to a copy you can reach"
+    die "could not clone $REPO; check your network, or set ATMOS_REPO to a copy you can reach"
 fi
 git -C "$DIR" sparse-checkout set client sdk harness host
 
