@@ -90,6 +90,7 @@ export const regions: RegionRow[] = [
 export const firstAnswer = {
 	stock: [15.9, 16.8, 32.8],
 	atmos: [19.3, 35.9, 54.2],
+	// The self-hosted configuration (Node harness, 10-minute rotation), arm N2VH.
 	verified: [29.3, 52.2, 71.0]
 };
 

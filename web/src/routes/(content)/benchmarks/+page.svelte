@@ -119,7 +119,7 @@
 	<tbody>
 		<tr><td>Stock anon-rpc</td><td class="num">{firstAnswer.stock.map((v) => `${v} s`).join(' · ')}</td></tr>
 		<tr><td>Atmos v1, Node harness</td><td class="num">{firstAnswer.atmos.map((v) => `${v} s`).join(' · ')}</td></tr>
-		<tr><td>Atmos with verified reads</td><td class="num">{firstAnswer.verified.map((v) => `${v} s`).join(' · ')}</td></tr>
+		<tr><td>Verified reads, as the self-hosted endpoint runs them</td><td class="num">{firstAnswer.verified.map((v) => `${v} s`).join(' · ')}</td></tr>
 	</tbody>
 </table>
 <p>Across all Atmos arms and regions, the first answer took 17–71 s, against 16–33 s for the stock worker.</p>
