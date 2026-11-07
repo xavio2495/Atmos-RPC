@@ -95,6 +95,8 @@ bench/test/dist/
 host/page/dist/
 host/dist/
 host/.bundles/
+sdk/.bundles/
+sdk/node_modules/
 harness/*/dist/
 
 # Editor settings

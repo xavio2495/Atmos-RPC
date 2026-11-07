@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "NODE_PATH=node_modules esbuild page/main.js --bundle --format=esm --target=es2022 --outfile=page/dist/main.js && NODE_PATH=node_modules esbuild core.js --bundle --platform=node --format=esm --target=node22 --outfile=dist/core.node.js \"--banner:js=import { createRequire } from 'module'; const require = createRequire(import.meta.url);\"",
+    "build": "NODE_PATH=node_modules esbuild page/main.js --bundle --format=esm --target=es2022 --outfile=page/dist/main.js && NODE_PATH=node_modules esbuild ../sdk/core.js --bundle --platform=node --format=esm --target=node22 --outfile=dist/core.node.js \"--banner:js=import { createRequire } from 'module'; const require = createRequire(import.meta.url);\"",
     "start": "node --dns-result-order=ipv4first server.mjs",
     "test:direct": "NODE_PATH=node_modules esbuild test/direct.mjs --bundle --platform=node --format=esm --outfile=dist/test-direct.mjs --log-level=warning \"--banner:js=import { createRequire } from 'module'; const require = createRequire(import.meta.url);\" && node --dns-result-order=ipv4first dist/test-direct.mjs"
   },

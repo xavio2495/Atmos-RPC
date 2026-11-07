@@ -285,7 +285,17 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
   const follower = accessLists?.length
     ? createAccessListFollower({
         headerAt: headerByNumber,
-        fetchList: (hash) => onProviders({ jsonrpc: "2.0", id: 7, method: "eth_getBlockAccessList", params: [hash] }, (l) => l, accessLists),
+        fetchList: async (hash) => {
+          // Behind one URL, some of a provider's backends lack the method; another try
+          // usually reaches one that has it.
+          for (let i = 0; ; i++) {
+            try {
+              return await onProviders({ jsonrpc: "2.0", id: 7, method: "eth_getBlockAccessList", params: [hash] }, (l) => l, accessLists);
+            } catch (e) {
+              if (i === 3 || !/not available|does not exist|not found/i.test(String(e?.message))) throw e;
+            }
+          }
+        },
         maxGap: MAX_HEADER_WALK,
         log,
       })

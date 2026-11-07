@@ -5,13 +5,16 @@ import { createReceiptChecker } from "../client/receipts.js";
 import { createShaper } from "../client/shape.js";
 
 const BOOTSTRAP_RPC = "https://ethereum-rpc.publicnode.com";
-const BEACON = "https://lodestar-sepolia.chainsafe.io";
+// Two independent Sepolia beacon APIs; the first also serves the light client.
+const BEACONS = ["https://lodestar-sepolia.chainsafe.io", "https://ethereum-sepolia-beacon-api.publicnode.com"];
+// Serves EIP-7928 block access lists (tenderly does not).
+const ACCESS_LISTS = ["https://ethereum-sepolia-rpc.publicnode.com"];
 // tenderly serves proofs a few blocks behind head; publicnode only at head.
 const PROVIDERS = ["https://sepolia.gateway.tenderly.co", "https://ethereum-sepolia-rpc.publicnode.com"];
 const LOCAL = {
   eth_chainId: "0x" + SEPOLIA.chainId.toString(16),
   net_version: String(SEPOLIA.chainId),
-  web3_clientVersion: "atmos-host/0.1",
+  web3_clientVersion: "atmos/0.1",
 };
 
 // The worker bootstraps from mainnet: its hash and download locations are read
@@ -73,8 +76,23 @@ const SHAPED_SEED = [
   { method: "eth_getProof", params: [ANY, [], "latest"] },
 ];
 
-// The host's RPC logic, the same under either runtime: in a browser page with the
+// The light client's trust anchor when none is given: the finalized block root both
+// beacon APIs report, read through the mixnet like everything else.
+async function agreedCheckpoint(get) {
+  for (let i = 0; i < 3; i++) {
+    const roots = await Promise.all(BEACONS.map((b) => get(b + "/eth/v1/beacon/headers/finalized").then((r) => r.json()).then((j) => j.data.root)));
+    if (roots[0] === roots[1]) return roots[0];
+    await new Promise((r) => setTimeout(r, 12_000));
+  }
+  throw new Error("beacon APIs disagree on the finalized root");
+}
+
+// Atmos's RPC logic for Sepolia, the same under either runtime: in a browser with the
 // browser harness, or in Node with the Node harness (`Worker`).
+// `checkpoint`: a trusted beacon block root; by default the finalized root two beacon
+// APIs agree on (trust on first use).
+// `bal`: keep proven accounts current from verified EIP-7928 block access lists, so a
+// repeat read names nothing to a provider. Costs a list fetch (3–9 s, 70–160 KB) per block.
 // `shape`: every call leaves in fixed-size batches on a fixed clock (constant-rate
 // schedule), so call timing and count stop showing activity. Costs latency.
 // `trace`: called with every request as it leaves for the network (after any
@@ -82,11 +100,11 @@ const SHAPED_SEED = [
 // `prefetch`: keep the wallet's recent verifiable reads re-proven at every new
 // verified block, and answer a repeat from that block's result. Never answers
 // with anything older than the current verified head. Off by default.
-export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false, trace, log = (e) => console.log(JSON.stringify(e)) }) {
+export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false, bal = false, trace, log = (e) => console.log(JSON.stringify(e)) }) {
   // "advisory": proven in part. An estimate proven not to revert with the provider's
   // gas figure, or a block whose header is proven but whose transaction list is not.
   const counts = { verified: 0, advisory: 0, plain: 0, local: 0, failed: 0, prefetched: 0 };
-  let reader, client, executor, receipts, transport;
+  let reader, client, executor, receipts, transport, shaper, prefetcher, closed = false;
 
   const ready = (async () => {
     // Shaped mode also pads every request body to a fixed size (in 2 KB steps),
@@ -108,17 +126,20 @@ export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false
     // Shaped: every provider's lanes open at boot, on a slower clock than the
     // default (constant load is about 3 calls a second in total), and dummies
     // start from a fixed mix of wallet-like calls.
-    transport = shape
-      ? createShaper({ request: wire, open: PROVIDERS, intervals: SHAPED_INTERVALS, seed: SHAPED_SEED }).request
-      : wire;
+    shaper = shape ? createShaper({ request: wire, open: PROVIDERS, intervals: SHAPED_INTERVALS, seed: SHAPED_SEED }) : null;
+    transport = shaper ? shaper.request : wire;
+    checkpoint ??= await agreedCheckpoint(fetchWire);
+    log({ event: "checkpoint", root: checkpoint });
     reader = await createVerifiedReader({
       request: transport,
-      beaconGet: (path) => fetchWire(BEACON + path).then((r) => r.json()),
+      beaconGet: (path) => fetchWire(BEACONS[0] + path).then((r) => r.json()),
       checkpoint,
       providers: PROVIDERS,
       chain: SEPOLIA,
+      accessLists: bal ? ACCESS_LISTS : null,
       log,
     });
+    if (closed) close();
     executor = createExecutor({ reader, chain: SEPOLIA });
     receipts = createReceiptChecker({ reader });
   })();
@@ -200,7 +221,7 @@ export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false
   // On each new verified head, re-prove every read the wallet used recently.
   if (prefetch) {
     let seen = -1;
-    ready.then(() => setInterval(async () => {
+    ready.then(() => (prefetcher = setInterval(async () => {
       const number = (await reader.head()).number;
       if (number === seen) return;
       seen = number;
@@ -211,7 +232,7 @@ export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false
           () => { e.reply = null; },
         );
       }
-    }, 2_000).unref?.(), () => {});
+    }, 2_000)).unref?.(), () => {});
   }
 
   // A failed start (no route, or the light client could not bootstrap) is
@@ -222,5 +243,18 @@ export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false
     log({ event: "start-failed", reason: startError });
   });
 
-  return { handle, status: () => ({ counts, ready: Boolean(reader), ...(startError ? { error: startError } : {}) }), ready };
+  function close() {
+    closed = true;
+    clearInterval(prefetcher);
+    reader?.close();
+    shaper?.close();
+    client?.close();
+  }
+
+  return {
+    handle,
+    close,
+    ready,
+    status: () => ({ counts, ready: Boolean(reader), ...(reader?.following() ? { following: reader.following() } : {}), ...(startError ? { error: startError } : {}) }),
+  };
 }

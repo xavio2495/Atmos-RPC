@@ -28,7 +28,11 @@ const SHAPE = process.env.ATMOS_SHAPE === "1";
 // Re-prove the wallet's recent reads at each new block and answer repeats from them. Off by default.
 const PREFETCH = process.env.ATMOS_PREFETCH === "1";
 
-if (!/^0x[0-9a-fA-F]{64}$/.test(CHECKPOINT ?? "")) {
+// Keep proven accounts current from verified EIP-7928 access lists (Sepolia). Off by default.
+const BAL = process.env.ATMOS_BAL === "1";
+
+// Without one, the host takes the finalized root two beacon APIs agree on.
+if (CHECKPOINT !== undefined && !/^0x[0-9a-fA-F]{64}$/.test(CHECKPOINT)) {
   console.error("ATMOS_CHECKPOINT must be a trusted Sepolia beacon block root (0x + 64 hex)");
   process.exit(1);
 }
@@ -61,7 +65,7 @@ async function startNode() {
       return fetch.call(this, url, init);
     };
   }
-  const atmos = startAtmos({ checkpoint: CHECKPOINT, Worker: NymWorker, shape: SHAPE, prefetch: PREFETCH, trace });
+  const atmos = startAtmos({ checkpoint: CHECKPOINT, Worker: NymWorker, shape: SHAPE, prefetch: PREFETCH, bal: BAL, trace });
   return { handle: atmos.handle, status: atmos.status };
 }
 
@@ -82,7 +86,7 @@ async function startChromium() {
   const browser = await chromium.launch();
   const page = await browser.newPage();
   page.on("console", (m) => console.log(m.text()));
-  await page.addInitScript(([cp, shape]) => { window.ATMOS_CHECKPOINT = cp; window.ATMOS_SHAPE = shape; }, [CHECKPOINT, SHAPE]);
+  await page.addInitScript(([cp, shape, bal]) => { window.ATMOS_CHECKPOINT = cp; window.ATMOS_SHAPE = shape; window.ATMOS_BAL = bal; }, [CHECKPOINT, SHAPE, BAL]);
   await page.goto(`http://127.0.0.1:${pageServer.address().port}/`);
   await page.waitForFunction(() => typeof window.atmosHandle === "function");
   return {
@@ -133,7 +137,7 @@ createServer(async (req, res) => {
   const reply = (status, body) => send(res, status, body, cors);
   if (req.method === "OPTIONS") return reply(204, null);
   if (req.method === "GET" && path === "") {
-    return reply(200, { name: "atmos-host", chains: [Number(CHAIN_ID)], runtime: RUNTIME, shaped: SHAPE, prefetch: PREFETCH, ...(await status()) });
+    return reply(200, { name: "atmos-host", chains: [Number(CHAIN_ID)], runtime: RUNTIME, shaped: SHAPE, prefetch: PREFETCH, accessLists: BAL, ...(await status()) });
   }
   if (req.method !== "POST" || path !== `/${CHAIN_ID}`) return reply(404, rpcError(null, -32601, "use POST /" + CHAIN_ID));
 
