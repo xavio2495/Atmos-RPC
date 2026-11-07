@@ -13,10 +13,11 @@
 [![Nym mixnet](https://img.shields.io/badge/Transport-Nym_mixnet-222222?style=flat-square)](https://nym.com)
 [![Node 24](https://img.shields.io/badge/Node-24-5FA04E?style=flat-square&logo=nodedotjs&logoColor=white)](#development)
 [![EIP-1193](https://img.shields.io/badge/Provider-EIP--1193-222222?style=flat-square)](#use-it)
+[![Ethereum Foundation · Best Use of Anon-RPC](https://img.shields.io/badge/Ethereum_Foundation-Best_Use_of_Anon--RPC-3fcfaa?style=flat-square&logo=ethereum&logoColor=white)](#sponsor-integration-ethereum-foundation--anon-rpc)
 
 <br>
 
-**[Background](#the-background)** · **[What it does](#what-it-does)** · **[Use it](#use-it)** · **[Architecture](#architecture)** · **[Request flow](#request-flow)** · **[Results](#results)** · **[What is verified](#what-is-verified)** · **[Where it lives](#where-it-lives)** · **[Develop](#development)** · **[License](#license)**
+**[Sponsor](#sponsor-integration-ethereum-foundation--anon-rpc)** · **[Background](#the-background)** · **[What it does](#what-it-does)** · **[Use it](#use-it)** · **[Architecture](#architecture)** · **[Request flow](#request-flow)** · **[Results](#results)** · **[What is verified](#what-is-verified)** · **[Where it lives](#where-it-lives)** · **[Develop](#development)** · **[License](#license)**
 
 <br><br><br>
 </div>
@@ -27,6 +28,74 @@ You can use it three ways: as an **EIP-1193 provider** for viem, ethers or wagmi
 
 > ### ⚠️ Sepolia · research software · unaudited
 > Atmos runs on **Sepolia only** and has **not been independently audited**. It holds no keys and moves no funds itself, but do not rely on it for the privacy of mainnet activity yet. Timing results are from a small number of Cloud Run sessions; read them as measured, not guaranteed.
+
+---
+
+## Sponsor integration: Ethereum Foundation · anon-rpc
+
+| Sponsor | Track | What Atmos builds on |
+|---|---|---|
+| **Ethereum Foundation** | **Best Use of Anon-RPC** | [`ethereum/anon-rpc`](https://github.com/ethereum/anon-rpc) spec 0.4.0: the browser harness, harness-core and the Node harness (forked) |
+
+**anon-rpc** is the Ethereum Foundation's standard for sending a wallet's RPC calls through an anonymity network. A small on-chain **specifier** contract names a worker bundle by its hash and lists where to download it. A **harness** downloads the bundle, checks it against that hash, and runs it in a sandbox. The app then calls `worker.fetch()`, and the worker (here, Nym's) carries the request through the mixnet. Atmos is built entirely on that interface. It never replaces the worker or touches the user's network identity itself; it changes only **what the worker is given and what is done with its answers**.
+
+### Where anon-rpc is used
+
+| anon-rpc part | Used for | In Atmos |
+|---|---|---|
+| `@anon-rpc/browser-harness` 0.4.0, `AnonRpcWorker` | Runs the Nym worker in a sandboxed, null-origin iframe in the browser (SDK, demo, benchmark) | [`client/atmos.js`](./client/atmos.js) · [`sdk/index.js`](./sdk/index.js) · [`bench/page/session.js`](./bench/page/session.js) |
+| `@anon-rpc/node-harness` (forked) and `@anon-rpc/harness-core` 0.4.0 | Runs the same worker in Node with no browser: the default for `atmos-host` and the SDK in Node | [`harness/`](./harness) · [`sdk/node.js`](./sdk/node.js) · [`host/server.mjs`](./host/server.mjs) |
+| The Nym specifier `0x3aCD…0eD0` (`workerHash()`, `workerResolvers()`) | Identifies the worker bundle; Atmos pins its hash and resolver list | [`client/atmos.js`](./client/atmos.js) (`NYM_WORKER_HASH`, `pinSpecifier`) |
+| `WorkerInit.config` | Chooses the entry gateway and IPR exit per route (`preferredGateway`, `preferredIpr`), and the tunnel's connect timeout | [`client/atmos.js`](./client/atmos.js) (`bootRoute`) |
+| `WorkerInit.preExisting.rpcProvider` | The bootstrap provider the harness reads the specifier through; Atmos answers those reads from the pin | [`client/atmos.js`](./client/atmos.js) (`pinSpecifier`) |
+| `worker.ready`, `worker.fetch()`, `worker.close()` | Every RPC call, beacon-API request and access-list fetch Atmos makes | [`client/atmos.js`](./client/atmos.js) (`Route`) |
+| Stock anon-rpc, unchanged | The baseline every benchmark arm is measured against (arm `N0`) | [`bench/page/session.js`](./bench/page/session.js) |
+
+### How it is used
+
+1. **Boot a route.** Atmos picks an entry gateway and an IPR exit from the Nym directory's top performance band, then creates an `AnonRpcWorker` with them in `config`. It awaits `ready`, then **sends a real `eth_chainId` through the worker**, and only a route that answers is accepted. In our runs, some stock workers reported `ready` and then carried no call at all.
+2. **Shape what the worker receives.** Calls issued in the same tick leave as **one JSON-RPC batch**, with one request in flight per provider. Inside the Nym worker each origin has a single pooled connection, so parallel calls would each open a new TCP and TLS connection through the mixnet, one after another.
+3. **Keep a warm standby.** A second worker on a different exit is booted and connected to every provider in use. When a call stalls, or the route keeps failing fast, Atmos switches to the standby.
+4. **Separate heavy traffic.** Large background fetches (a block's access list) go on their own workers ("bulk lanes"), so they never queue the wallet's calls.
+5. **Verify the answers.** Replies from `worker.fetch()` go through a light client: proofs are checked against a verified state root, and `eth_call` runs in a local EVM. A provider that sits behind the mixnet can't lie about state.
+6. **Boot silently and safely.** The specifier reads that the harness makes through `preExisting.rpcProvider` are answered from a **pinned hash and resolver list**. No RPC provider learns, from the user's own IP, that this machine is starting the worker, and a lying provider can't substitute the code.
+
+### Forking the Node harness
+
+anon-rpc's Node harness ran workers in QuickJS, which has no WebAssembly or WebSocket, so the Nym worker (a large wasm client that opens a WebSocket to its gateway) couldn't run there. We forked it at upstream [`c8980fb`](./harness/UPSTREAM), kept the upstream test suite passing, and added:
+
+| Change | Commit |
+|---|---|
+| Workers run in a **V8 isolate** (`isolated-vm`) instead of QuickJS | `591e28d` |
+| **WebSocket** and **browser-platform** capabilities (Blob, Worker, MessageChannel, promise forms of WebAssembly), granted per worker | `b09085e` |
+| **Blob frames** sent over the bridged WebSocket; before this, every binary frame left empty and the Nym worker never got past its exit handshake | `2cf6c99` |
+| **`expectedHash`**: a worker whose specifier hash differs from the pin never boots | `6978494` |
+| **Host allowlist** (`network.policy.hosts`), checked before DNS on the fetch, WebSocket and socket bridges | `6978494` |
+| **Every redirect hop re-checked** against the allowlist and address policy, and the response size capped while streaming | `2ecf359` |
+| WebSocket receive queue capped, listeners attached before `open`, closed sockets freed | `3664750` |
+| `getRandomValues` over 65,536 bytes throws instead of returning a partly zero buffer | `609c3f5` |
+
+With the fork, `atmos-host` runs the Nym worker in plain Node at the same speed as headless Chromium: page load 2.8 s vs 3.4 s, typical call 522 ms vs 572 ms, 100% of calls answered in both (Cloud Run run 5).
+
+### Measured against stock anon-rpc
+
+| | Stock anon-rpc (Nym worker) | Atmos on the same worker |
+|---|---|---|
+| 10-read page load, 3 regions | 14.7–22.0 s | **1.5–3.6 s** |
+| Slowest 5% of steady calls | 3.2–7.3 s | **0.9–2.7 s** |
+| Route reported ready but dead | 2 of 6 sessions (run 1) | rejected at boot by the probe |
+| Time to first answer | 16–33 s | 17–71 s (slower: the route is tested first) |
+
+### Feedback to anon-rpc
+
+We talked with anon-rpc's author during the event and sent these findings privately:
+- **Worker loading:** the worker hash is read with one unproven `eth_call`, so a lying bootstrap provider can choose the code. The browser harness iframe has no `connect-src` limit. Every live specifier is owned by a single key. We proposed `WorkerInit.expectedHash` or a required proof; the author suggested a feature request.
+- **A confirmed bug:** `worker.fetch()` returns a `Response` with an empty `url`, which breaks libraries that read it. Helios's HTTP client fails with "url parse". The author confirmed it as a bug.
+Found while hardening our fork, also present in upstream's Node harness, and not yet reported:
+- redirects followed without re-checking the address policy, so a worker allowed one host could be redirected to another, including the host's own network;
+- `getRandomValues` over 65,536 bytes leaving a zero tail.
+
+Both are fixed in our fork.
 
 ---
 
