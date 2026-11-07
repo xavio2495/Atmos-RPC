@@ -353,6 +353,46 @@ Object.assign(audit, {
     c.close();
   },
 });
+Object.assign(audit, {
+  async "BAL: bulkReplace swaps a lane that is too slow for the block rate"() {
+    const { c, events } = await client({ bulkReplace: true });
+    FakeWorker.slow = { eth_getBlockAccessList: 0 };
+    await c.bulk(URL_A, rpc(0, "eth_blockNumber")); // the lane boots
+    const lane = workers.at(-1);
+    lane.delayMs = 5;
+    // Pretend each list took 20 s: the client measures real time, so stub the clock for these calls.
+    const realNow = performance.now.bind(performance);
+    let skew = 0;
+    performance.now = () => realNow() + skew;
+    const origFetch = lane.fetch.bind(lane);
+    lane.fetch = async (...a) => { const r = await origFetch(...a); skew += 20_000; return r; };
+    for (let i = 1; i <= 5; i++) await c.bulk(URL_A, rpc(i, "eth_getBlockAccessList", [`0x${i}`]));
+    performance.now = realNow;
+    FakeWorker.slow = {};
+    await sleep(100);
+    assert.ok(events.some((e) => e.event === "bulk-lane-slow"));
+    assert.ok(events.some((e) => e.event === "bulk-lane-replaced"));
+    const r = await c.bulk(URL_A, rpc(9, "eth_getBlockAccessList", ["0x9"]));
+    assert.equal(r.result, 'eth_getBlockAccessList:["0x9"]');
+    assert.notEqual(workers.at(-1), lane, "a new route carries the lane");
+    c.close();
+  },
+
+  async "BAL: without bulkReplace a slow lane is kept"() {
+    const { c, events } = await client();
+    await c.bulk(URL_A, rpc(0, "eth_blockNumber"));
+    const realNow = performance.now.bind(performance);
+    let skew = 0;
+    performance.now = () => realNow() + skew;
+    const lane = workers.at(-1);
+    const origFetch = lane.fetch.bind(lane);
+    lane.fetch = async (...a) => { const r = await origFetch(...a); skew += 20_000; return r; };
+    for (let i = 1; i <= 5; i++) await c.bulk(URL_A, rpc(i, "eth_getBlockAccessList", [`0x${i}`]));
+    performance.now = realNow;
+    assert.ok(!events.some((e) => e.event === "bulk-lane-replaced"));
+    c.close();
+  },
+});
 const withCap = (p, ms) => Promise.race([p, sleep(ms).then(() => { throw new Error(`no answer in ${ms} ms`); })]);
 if (!process.argv.includes("--no-audit")) Object.assign(tests, audit);
 

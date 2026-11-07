@@ -40,6 +40,11 @@ const MAX_QUEUE_WAIT_SAMPLES = 1_000;
 const MIN_BAND = 6;
 // Large background fetches (e.g. a block's access list, 70–160 KB) get this long on their own lane.
 const BULK_TIMEOUT_MS = 60_000;
+// With bulkReplace, a lane is replaced when its last 5 lists have a median over 16 s, or 2 of them
+// took over 30 s: two lanes alternating give each lane about 24 s (two blocks) per list.
+const BULK_WINDOW = 5;
+const BULK_SLOW_MEDIAN_MS = 16_000;
+const BULK_SLOW_TAIL_MS = 30_000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function withTimeout(p, ms, what) {
@@ -252,11 +257,12 @@ function hedgeDelay(latencies, lambdaMs) {
 //     change-check asks, through the mixnet. bulkLanes: how many separate routes carry bulk() calls.
 //     bulkTunnel: extra tunnel options for the bulk lanes only (e.g. a larger reply-SURB supply for
 //     large replies); the lanes' exits can see them, but those lanes carry only public data.
+//     bulkReplace: replace a bulk lane that is alive but slower than the block rate.
 export async function createAtmosClient({
   bootstrapProvider, probeUrl, log = () => {}, Worker = AnonRpcWorker,
   hedgeLambdaMs = null, rotateMs = null, overflow = false, tunnel = {}, padBytes = 0,
   workerHash = NYM_WORKER_HASH, workerResolvers = workerHash === NYM_WORKER_HASH ? NYM_WORKER_RESOLVERS : null,
-  nymApis = NYM_APIS, specifierRpc = SPECIFIER_RPC, bulkLanes = 1, bulkTunnel = {},
+  nymApis = NYM_APIS, specifierRpc = SPECIFIER_RPC, bulkLanes = 1, bulkTunnel = {}, bulkReplace = false,
 }) {
   if (Array.isArray(nymApis) === false || nymApis.length === 0) throw new TypeError("nymApis must be a non-empty list");
   let directory = await loadBand(nymApis);
@@ -466,7 +472,29 @@ export async function createAtmosClient({
   // seconds, so on the wallet's route it would queue the wallet's calls behind it and trip the
   // attempt timeout into needless failovers. Each lane boots on first use; a stalled one is replaced.
   // Calls go round-robin over `bulkLanes` lanes, so two lanes carry about twice the data.
-  const lanes = Array.from({ length: Math.max(1, bulkLanes) }, () => ({ route: null, booting: null, queues: new Map() }));
+  const lanes = Array.from({ length: Math.max(1, bulkLanes) }, () => ({ route: null, booting: null, replacing: null, samples: [], queues: new Map() }));
+  // Replace a lane that is alive but too slow for the block rate; the old route finishes what it carries.
+  function noteBulkTime(lane, ms) {
+    if (!bulkReplace) return;
+    lane.samples.push(ms);
+    if (lane.samples.length > BULK_WINDOW) lane.samples.shift();
+    if (lane.samples.length < BULK_WINDOW || lane.replacing || closed) return;
+    const sorted = [...lane.samples].sort((a, b) => a - b);
+    const slow = sorted[BULK_WINDOW >> 1] > BULK_SLOW_MEDIAN_MS || lane.samples.filter((x) => x > BULK_SLOW_TAIL_MS).length >= 2;
+    if (!slow) return;
+    log({ event: "bulk-lane-slow", lane: lanes.indexOf(lane), samples: [...lane.samples] });
+    lane.replacing = bootRoute(bulkTunnel)
+      .then((r) => {
+        if (closed) return r.close();
+        const old = lane.route;
+        lane.route = r;
+        lane.samples = [];
+        if (old) retire(old);
+        log({ event: "bulk-lane-replaced", lane: lanes.indexOf(lane) });
+      })
+      .catch(() => {})
+      .finally(() => { lane.replacing = null; });
+  }
   let nextLane = 0;
   function laneRoute(lane) {
     if (lane.route) return Promise.resolve(lane.route);
@@ -488,7 +516,9 @@ export async function createAtmosClient({
       route = await laneRoute(lane);
       const start = performance.now();
       const reply = await withTimeout(postJson(route.worker, url, body, padBytes), BULK_TIMEOUT_MS, "bulk");
-      log({ event: "bulk", lane: lanes.indexOf(lane), ms: Math.round(performance.now() - start), bytes: JSON.stringify(reply).length });
+      const ms = Math.round(performance.now() - start);
+      log({ event: "bulk", lane: lanes.indexOf(lane), ms, bytes: JSON.stringify(reply).length });
+      noteBulkTime(lane, ms);
       return reply;
     } catch (e) {
       log({ event: "bulk-failed", lane: lanes.indexOf(lane), reason: String(e?.message ?? e).slice(0, 80) });
