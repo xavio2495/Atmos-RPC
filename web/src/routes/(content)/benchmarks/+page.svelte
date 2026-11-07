@@ -1,9 +1,29 @@
 <script lang="ts">
 	import BurstChart from '#lib/components/BurstChart.svelte';
-	import { run, regions, regionsRun2, firstAnswer, parity, verified, harness, options, anonymity, type Arm, type Measured, type RegionRow } from '#lib/data/bench.ts';
+	import BenchCards from '#lib/components/BenchCards.svelte';
+	import {
+		run,
+		regions,
+		regionsRun2,
+		firstAnswer,
+		parity,
+		verified,
+		harness,
+		options,
+		anonymity,
+		type Arm,
+		type Measured,
+		type RegionRow
+	} from '#lib/data/bench.ts';
 
 	const labels = Object.fromEntries(run.arms.map((a) => [a.arm, a.label])) as Record<Arm, string>;
-	const short: Partial<Record<Arm, string>> = { D: 'Direct', N0: 'Stock anon-rpc', N1: 'Atmos v1', N1H: 'Atmos, Node harness', N2VH: 'Verified, self-hosted' };
+	const short: Partial<Record<Arm, string>> = {
+		D: 'Direct',
+		N0: 'Stock anon-rpc',
+		N1: 'Atmos v1',
+		N1H: 'Atmos, Node harness',
+		N2VH: 'Verified, self-hosted'
+	};
 	const ms = (v: number | null) =>
 		v == null ? '–' : v < 1000 ? `${v} ms` : `${(v / 1000).toFixed(1)} s`;
 	const ci = (c: [number, number] | null) => (c ? `${ms(c[0])} – ${ms(c[1])}` : '');
@@ -13,20 +33,72 @@
 	<title>Benchmarks · Atmos</title>
 </svelte:head>
 
-<h1>Stock anon-rpc against Atmos, from the cloud</h1>
+<h1>Faster, verified, private: measured</h1>
 <p class="lede">
-	The same wallet-shaped workload runs in each arm: plain fetch, the stock anon-rpc Nym worker,
-	Atmos v1 on top of that same worker, and Atmos with a constant-rate schedule or with verified
-	reads. Each session runs on Cloud Run, so no tab is ever throttled in the background.
+	Stock anon-rpc against Atmos, from the cloud. The same wallet-shaped workload runs in each setup:
+	plain RPC, the stock anon-rpc Nym worker, and Atmos on top of that same worker, with and without
+	verified reads and a constant-rate schedule. The ideal is a truly anonymous RPC: as fast as plain
+	RPC, every answer proven, and nothing learned about who, when or what.
 </p>
 
+<BenchCards />
+
+{#snippet regionTable(rows: RegionRow[], arms: Arm[])}
+	<table>
+		<thead>
+			<tr>
+				<th>Region</th>
+				{#each arms as k (k)}<th class="num">{short[k] ?? k}</th>{/each}
+			</tr>
+		</thead>
+		<tbody>
+			{#each rows as r (r.region)}
+				<tr>
+					<td>{r.region}</td>
+					{#each arms as k (k)}
+						{@const c = r.cells[k]}
+						<td class="num"
+							>{#if c}{ms(c[0])}<br /><small>{ms(c[1])} · {c[2]}%</small>{:else}–{/if}</td
+						>
+					{/each}
+				</tr>
+			{/each}
+		</tbody>
+	</table>
+{/snippet}
+
+{#snippet measured(rows: Measured[])}
+	<table>
+		<thead>
+			<tr>
+				<th></th>
+				<th class="num">10-read burst</th>
+				<th class="num">Steady p50</th>
+				<th class="num">Steady p95</th>
+				<th class="num">Answered</th>
+			</tr>
+		</thead>
+		<tbody>
+			{#each rows as m (m.label)}
+				<tr>
+					<td>{m.label}</td>
+					<td class="num">{ms(m.burstMs)}</td>
+					<td class="num">{ms(m.p50Ms)}</td>
+					<td class="num">{ms(m.p95Ms)}</td>
+					<td class="num">{m.answeredPct}%</td>
+				</tr>
+			{/each}
+		</tbody>
+	</table>
+{/snippet}
+
+<h2 id="faster">Faster</h2>
 {#if run.status === 'partial'}
 	<div class="callout"><p><strong>Partial results.</strong> {run.note} As of {run.asOf}.</p></div>
 {:else}
 	<p>{run.note} Measured {run.asOf}.</p>
 {/if}
-
-<h2>Results, {run.region}</h2>
+<h3>Results, {run.region}</h3>
 <table>
 	<thead>
 		<tr>
@@ -61,9 +133,9 @@
 
 <BurstChart stairs={run.burstStairs} {labels} cutoffMs={run.cutoffMs} />
 <p>
-	A call with no answer after {run.cutoffMs / 1000} s is cut off. In this run the stock worker's
-	median session answered all ten burst reads before the cut-off, one after another, over 17 s;
-	in earlier runs most of them hit it.
+	A call with no answer after {run.cutoffMs / 1000} s is cut off. In this run the stock worker's median
+	session answered all ten burst reads before the cut-off, one after another, over 17 s; in earlier runs
+	most of them hit it.
 </p>
 <p>
 	The staircase is the cost of parallel calls through one stock worker. Its transport keeps a single
@@ -72,31 +144,7 @@
 	connection that is already warm.
 </p>
 
-{#snippet regionTable(rows: RegionRow[], arms: Arm[])}
-	<table>
-		<thead>
-			<tr>
-				<th>Region</th>
-				{#each arms as k (k)}<th class="num">{short[k] ?? k}</th>{/each}
-			</tr>
-		</thead>
-		<tbody>
-			{#each rows as r (r.region)}
-				<tr>
-					<td>{r.region}</td>
-					{#each arms as k (k)}
-						{@const c = r.cells[k]}
-						<td class="num"
-							>{#if c}{ms(c[0])}<br /><small>{ms(c[1])} · {c[2]}%</small>{:else}–{/if}</td
-						>
-					{/each}
-				</tr>
-			{/each}
-		</tbody>
-	</table>
-{/snippet}
-
-<h2>Three regions</h2>
+<h3>Three regions</h3>
 <p>
 	The final run: every arm on one image, Cloud Run in three regions, 4 sessions per arm per region,
 	10-minute sessions. Each cell is the burst median, then steady p50 and the share of calls
@@ -109,25 +157,10 @@
 	the one call in flight (run 4).
 </p>
 
-<h2>Time to the first answer</h2>
+<h3>Against direct RPC, per method</h3>
 <p>
-	This is where Atmos is slower than the stock worker. Before its first answer, Atmos loads the Nym
-	directory, tests a gateway, and checks the route with a real call; verified reads also sync a
-	light client. Medians per region (europe-west1, us-east1, asia-south1):
-</p>
-<table>
-	<tbody>
-		<tr><td>Stock anon-rpc</td><td class="num">{firstAnswer.stock.map((v) => `${v} s`).join(' · ')}</td></tr>
-		<tr><td>Atmos v1, Node harness</td><td class="num">{firstAnswer.atmos.map((v) => `${v} s`).join(' · ')}</td></tr>
-		<tr><td>Verified reads, as the self-hosted endpoint runs them</td><td class="num">{firstAnswer.verified.map((v) => `${v} s`).join(' · ')}</td></tr>
-	</tbody>
-</table>
-<p>Across all Atmos arms and regions, the first answer took 17–71 s, against 16–33 s for the stock worker.</p>
-
-<h2>Against direct RPC, per method</h2>
-<p>
-	The parity run: steady calls only, 4 sessions per arm per region. Each cell is p50 / p95. Atmos adds
-	about 0.5–0.6 s per call, which is the mixnet's round trip, and a verified balance adds about
+	The parity run: steady calls only, 4 sessions per arm per region. Each cell is p50 / p95. Atmos
+	adds about 0.5–0.6 s per call, which is the mixnet's round trip, and a verified balance adds about
 	another 0.5–0.9 s for its proof. The latest block number is answered from the verified head.
 </p>
 <table>
@@ -154,53 +187,43 @@
 </table>
 <p>
 	<small
-		>In the benchmark, <code>eth_call</code>, <code>eth_estimateGas</code> and receipts pass through the
-		verified arm unchecked; the self-hosted endpoint runs <code>eth_call</code> locally on proven state,
-		which is measured separately.</small
+		>In the benchmark, <code>eth_call</code>, <code>eth_estimateGas</code> and receipts pass through
+		the verified arm unchecked; the self-hosted endpoint runs <code>eth_call</code> locally on proven
+		state, which is measured separately.</small
 	>
 </p>
 
-<h2>Earlier reference: run 2</h2>
+<h3 id="first-answer">Time to the first answer</h3>
 <p>
-	Six sessions per arm per region, 10-minute sessions, sessions on flashbots left out. A stock burst of
-	24.0 s means the median session hit the 24 s cut-off.
+	This is where Atmos is slower than the stock worker. Before its first answer, Atmos loads the Nym
+	directory, tests a gateway, and checks the route with a real call; verified reads also sync a
+	light client. Medians per region (europe-west1, us-east1, asia-south1):
 </p>
-{@render regionTable(regionsRun2, ['D', 'N0', 'N1'])}
-
-{#snippet measured(rows: Measured[])}
-	<table>
-		<thead>
-			<tr>
-				<th></th>
-				<th class="num">10-read burst</th>
-				<th class="num">Steady p50</th>
-				<th class="num">Steady p95</th>
-				<th class="num">Answered</th>
-			</tr>
-		</thead>
-		<tbody>
-			{#each rows as m (m.label)}
-				<tr>
-					<td>{m.label}</td>
-					<td class="num">{ms(m.burstMs)}</td>
-					<td class="num">{ms(m.p50Ms)}</td>
-					<td class="num">{ms(m.p95Ms)}</td>
-					<td class="num">{m.answeredPct}%</td>
-				</tr>
-			{/each}
-		</tbody>
-	</table>
-{/snippet}
-
-<h2>Verified reads</h2>
+<table>
+	<tbody>
+		<tr
+			><td>Stock anon-rpc</td><td class="num"
+				>{firstAnswer.stock.map((v) => `${v} s`).join(' · ')}</td
+			></tr
+		>
+		<tr
+			><td>Atmos v1, Node harness</td><td class="num"
+				>{firstAnswer.atmos.map((v) => `${v} s`).join(' · ')}</td
+			></tr
+		>
+		<tr
+			><td>Verified reads, as the self-hosted endpoint runs them</td><td class="num"
+				>{firstAnswer.verified.map((v) => `${v} s`).join(' · ')}</td
+			></tr
+		>
+	</tbody>
+</table>
 <p>
-	Every read checked against a light client, in europe-west1. Refreshing the verified head on a
-	fixed clock, and reusing proofs within a block, made the burst about four times faster.
+	Across all Atmos arms and regions, the first answer took 17–71 s, against 16–33 s for the stock
+	worker.
 </p>
-{@render measured(verified)}
-<p><small>{verified[1].note}</small></p>
 
-<h2>Browser or Node</h2>
+<h3>Browser or Node</h3>
 <p>
 	The same client, with the anonymity worker in headless Chromium or in Atmos's Node harness (a V8
 	isolate, no browser). Run 7 adds the pinned worker hash and the worker's host allowlist: 8 of 8
@@ -208,7 +231,7 @@
 </p>
 {@render measured(harness)}
 
-<h2>Optional settings</h2>
+<h3>Optional settings</h3>
 <p>
 	Four sessions each. None beat the defaults by more than the spread between sessions, so all stay
 	off in the client; the self-hosted endpoint turns on rotation (every 10 minutes) because it limits
@@ -216,12 +239,49 @@
 </p>
 {@render measured(options)}
 
-<h2>What an observer can tell</h2>
+<h3>Earlier reference: run 2</h3>
+<p>
+	Six sessions per arm per region, 10-minute sessions, sessions on flashbots left out. A stock burst
+	of 24.0 s means the median session hit the 24 s cut-off.
+</p>
+{@render regionTable(regionsRun2, ['D', 'N0', 'N1'])}
+
+<h3>Earlier measurements</h3>
+<p>
+	Before this benchmark, the same effect was measured in a desktop browser with live Nym workers.
+	Those runs used a home connection and few samples, so read them as direction, not as final
+	figures.
+</p>
+<table>
+	<thead>
+		<tr><th>Pattern, 10 reads on one worker</th><th class="num">Wall time (3 rounds)</th></tr>
+	</thead>
+	<tbody>
+		<tr
+			><td>10 concurrent calls (how wallets issue them)</td><td class="num">8.5 / 9.1 / 9.9 s</td
+			></tr
+		>
+		<tr><td>10 sequential calls</td><td class="num">6.7 / 6.8 / 7.0 s</td></tr>
+		<tr><td>One JSON-RPC batch</td><td class="num">1.06 / 1.20 / 1.45 s</td></tr>
+		<tr><td>Two 5-read batches on two workers</td><td class="num">0.83 / 0.89 / 0.99 s</td></tr>
+	</tbody>
+</table>
+
+<h2 id="verified">Verified</h2>
+<h3>Verified reads</h3>
+<p>
+	Every read checked against a light client, in europe-west1. Refreshing the verified head on a
+	fixed clock, and reusing proofs within a block, made the burst about four times faster.
+</p>
+{@render measured(verified)}
+<p><small>{verified[1].note}</small></p>
+
+<h2 id="private">Private</h2>
+<h3>What an observer can tell</h3>
 <p>
 	An observer of the self-hosted endpoint's outgoing traffic tried to tell 12-second windows of
-	wallet activity from idle ones, with the best threshold chosen with hindsight. 50% is chance.
-	This covers outgoing requests only: replies are not padded, and incoming traffic has not been
-	measured.
+	wallet activity from idle ones, with the best threshold chosen with hindsight. 50% is chance. This
+	covers outgoing requests only: replies are not padded, and incoming traffic has not been measured.
 </p>
 <table>
 	<thead>
@@ -244,7 +304,8 @@
 	</tbody>
 </table>
 
-<h2>The workload</h2>
+<h2 id="method">Method</h2>
+<h3>The workload</h3>
 <p>One session takes about ten minutes, on one RPC provider chosen per session:</p>
 <ol>
 	<li>
@@ -256,9 +317,9 @@
 		<code>eth_blockNumber</code>, one <code>eth_getTransactionCount</code>.
 	</li>
 	<li>
-		<strong>Steady polling.</strong> <code>eth_blockNumber</code> every 12 s and a balance every third
-		tick. Three times per session, one <code>eth_call</code>, one <code>eth_estimateGas</code> and one
-		receipt lookup.
+		<strong>Steady polling.</strong> <code>eth_blockNumber</code> every 12 s and a balance every
+		third tick. Three times per session, one <code>eth_call</code>, one <code>eth_estimateGas</code> and
+		one receipt lookup.
 	</li>
 	<li>
 		<strong>Write.</strong> One unfunded Sepolia transaction from a fresh key. The expected answer
@@ -266,7 +327,7 @@
 	</li>
 </ol>
 
-<h2>Method</h2>
+<h3>How sessions are compared</h3>
 <ul>
 	<li>The unit is the session, not the call, since calls within a session are correlated.</li>
 	<li>
@@ -280,26 +341,28 @@
 	<li>Only keyless public RPCs are used, at a few requests per second per provider at most.</li>
 </ul>
 
-<h2>Earlier measurements</h2>
-<p>
-	Before this benchmark, the same effect was measured in a desktop browser with live Nym workers.
-	Those runs used a home connection and few samples, so read them as direction, not as final
-	figures.
-</p>
-<table>
-	<thead>
-		<tr><th>Pattern, 10 reads on one worker</th><th class="num">Wall time (3 rounds)</th></tr>
-	</thead>
-	<tbody>
-		<tr
-			><td>10 concurrent calls (how wallets issue them)</td><td class="num">8.5 / 9.1 / 9.9 s</td
-			></tr
-		>
-		<tr><td>10 sequential calls</td><td class="num">6.7 / 6.8 / 7.0 s</td></tr>
-		<tr><td>One JSON-RPC batch</td><td class="num">1.06 / 1.20 / 1.45 s</td></tr>
-		<tr><td>Two 5-read batches on two workers</td><td class="num">0.83 / 0.89 / 0.99 s</td></tr>
-	</tbody>
-</table>
+<h3>This run</h3>
+<ul>
+	<li>
+		Run atmos-final, 2026-11-06; sessions ran 21:50–23:09 UTC. Executions: europe-west1
+		<code>atmos-final-zpgmf</code>, us-east1 <code>atmos-final-5m8dl</code>, asia-south1
+		<code>atmos-final-bzqh9</code>.
+	</li>
+	<li>
+		Image <code>bench:v9</code>, built from commit <code>94f519b</code>. Cloud Run, 2 vCPU and 4 GiB
+		per task.
+	</li>
+	<li>
+		4 sessions per setup per region, 10-minute sessions, the setup order rotated per task. Providers
+		publicnode and mevblocker (keyless); a call with no answer after 24 s is cut off.
+	</li>
+	<li>The unit is the session: medians, with bootstrap 95% intervals.</li>
+	<li>
+		Every session, 84 in all (3 regions × 7 setups × 4):
+		<a href="/data/atmos-final-sessions.csv" download>CSV</a> ·
+		<a href="/data/atmos-final-sessions.json" download>JSON with the run details</a>.
+	</li>
+</ul>
 
 <style>
 	small {

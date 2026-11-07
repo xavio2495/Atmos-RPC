@@ -2,6 +2,10 @@
 	<title>How it works · Atmos</title>
 </svelte:head>
 
+<script>
+	import HowDiagram from '#lib/components/HowDiagram.svelte';
+</script>
+
 
 # Hiding the IP is the first step, not the last
 
@@ -27,6 +31,10 @@ On top of that, the anonymous path is slow in ways a wallet notices: parallel re
 
 ## What Atmos adds, in three stages
 
+One read, end to end. The request crosses your machine, then the mixnet, and the reply comes back on its own route:
+
+<HowDiagram kind="path" />
+
 ### v1: the harness layer (built)
 
 v1 wraps the stock browser harness. It needs no change to any network's worker.
@@ -40,8 +48,20 @@ v1 wraps the stock browser harness. It needs no change to any network's worker.
 ### v2: verified and shaped
 
 - **Proof-checked reads (built).** A light client follows the sync committee's signatures to a trusted head. Balances, nonces, code and storage are checked with `eth_getProof` against that head's state root. `eth_call` runs locally on proven state, and receipts are checked against the block's receipts root. A lying exit or provider can cause a failure, never a wrong answer.
-- **Constant-rate traffic (built).** Padded batches leave on a fixed schedule with a random phase per session. In our model, that brings timing re-linkage down to chance, and measured on outgoing requests an observer was at chance too. Replies are not padded, so incoming traffic is not covered.
+- **Constant-rate traffic (built, opt-in).** Off by default. Padded batches leave on a fixed schedule with a random phase per session. In our model, that brings timing re-linkage down to chance, and measured on outgoing requests an observer was at chance too. Replies are not padded, so incoming traffic is not covered.
 - **Provider splitting (not yet).** Each address read from one provider, on its own session, so no single provider sees the whole set.
+
+How a read is proven before your code sees it:
+
+<HowDiagram kind="verify" />
+
+What the constant-rate schedule changes for someone watching the traffic:
+
+<HowDiagram kind="shape" />
+
+**Access-list updates (built, experimental).** Every block's EIP-7928 access list is the same for every client, so fetching it names nobody. Atmos checks each list against the block header and applies it to the accounts it already holds, so reading one of them again sends nothing. It works only while it keeps pace with the chain; when it falls behind, reads fall back to proofs.
+
+<HowDiagram kind="lists" />
 
 ### v3: the transport (planned)
 

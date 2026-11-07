@@ -35,6 +35,7 @@
 		<a href="/llms.txt" data-sveltekit-reload>llms.txt</a>
 		<a href="https://ethereum.github.io/anon-rpc/" rel="external">anon-rpc spec</a>
 		<a href="/about/">About</a>
+		<a href="/deck/">Deck</a>
 		<a href="https://github.com/xavio2495/Atmos-RPC" rel="external">GitHub</a>
 	</nav>
 </div>

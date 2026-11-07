@@ -16,6 +16,8 @@
 	const path = $derived(page.url.pathname);
 	const open = $derived(path !== '/');
 	const key = $derived(path.startsWith('/docs/') ? '/docs/' : path);
+	// the deck is full-screen slides, outside the lander and its tiles
+	const deck = $derived(path.startsWith('/deck/'));
 </script>
 
 <svelte:head>
@@ -26,24 +28,28 @@
 	/>
 </svelte:head>
 
-<Preloader />
+{#if deck}
+	{@render children()}
+{:else}
+	<Preloader />
 
-<main class="frame">
-	<div class="tiles" class:open>
-		<section class="lander">
-			<Atmosphere />
-			<NavNotch />
-			<Hero {open} />
-		</section>
-		<section class="tile-wrap" inert={!open} aria-hidden={!open}>
-			{#key key}
-				<div class="route" in:pageMorph out:pageMorph>
-					{@render children()}
-				</div>
-			{/key}
-		</section>
-	</div>
-</main>
+	<main class="frame">
+		<div class="tiles" class:open>
+			<section class="lander">
+				<Atmosphere />
+				<NavNotch />
+				<Hero {open} />
+			</section>
+			<section class="tile-wrap" inert={!open} aria-hidden={!open}>
+				{#key key}
+					<div class="route" in:pageMorph out:pageMorph>
+						{@render children()}
+					</div>
+				{/key}
+			</section>
+		</div>
+	</main>
+{/if}
 
 <style>
 	.frame {
