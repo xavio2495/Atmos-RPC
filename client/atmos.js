@@ -25,6 +25,9 @@ const PROBE_TIMEOUT_MS = 24_000;
 const ATTEMPT_TIMEOUT_MS = 8_000;
 // The first request a route makes to a host also pays DNS, TCP and TLS through the mixnet.
 const FIRST_CONTACT_TIMEOUT_MS = 30_000;
+// No request on a route may hold its queue longer than this: a worker that never answers
+// must not stall every later call on that route.
+const ROUTE_REQUEST_TIMEOUT_MS = 60_000;
 // Known batch caps; any other provider's cap is learned from its first refusal.
 const KNOWN_BATCH_CAPS = { "eth.drpc.org": 3, "rpc.flashbots.net": 5 };
 // A replaced route stays open this long so requests already in flight on it can finish.
@@ -169,7 +172,7 @@ class Route {
     const origin = new URL(url).origin;
     const next = (this.chains.get(origin) ?? Promise.resolve())
       .catch(() => {})
-      .then(() => this.worker.fetch(url, init));
+      .then(() => withTimeout(this.worker.fetch(url, init), ROUTE_REQUEST_TIMEOUT_MS, "route request"));
     this.chains.set(origin, next);
     return next;
   }
@@ -193,10 +196,10 @@ class Route {
     items.forEach((it) => this.onWait(now - it.at));
     try {
       if (items.length === 1) {
-        items[0].resolve(await postJson(this.worker, url, items[0].body, this.padBytes));
+        items[0].resolve(await withTimeout(postJson(this.worker, url, items[0].body, this.padBytes), ROUTE_REQUEST_TIMEOUT_MS, "route request"));
       } else {
         const ids = items.map((_, i) => i + 1);
-        const reply = await postJson(this.worker, url, items.map((it, i) => ({ ...it.body, id: ids[i] })), this.padBytes);
+        const reply = await withTimeout(postJson(this.worker, url, items.map((it, i) => ({ ...it.body, id: ids[i] })), this.padBytes), ROUTE_REQUEST_TIMEOUT_MS, "route request");
         // A batch refused for its size means the provider caps batches: learn a smaller cap, resend.
         if (!Array.isArray(reply) && (reply?.error?.code === -32014 || /batch/i.test(reply?.error?.message ?? ""))) {
           this.caps[host] = Math.max(1, Math.floor(items.length / 2));
@@ -443,18 +446,20 @@ export async function createAtmosClient({
       route.warm.add(origin);
       return result;
     } catch (e) {
-      if (route !== primary) return attempt(primary);
+      // Every retry is bounded too, so a call always settles, even when every route stalls.
+      const retry = (r) => withTimeout(attempt(r), FIRST_CONTACT_TIMEOUT_MS, "retry timeout");
+      if (route !== primary) return retry(primary);
       // A fast error means the provider dropped the connection, not that the route stalled.
       if (e?.message !== "attempt timeout") {
         try {
-          return await attempt(route);
+          return await retry(route);
         } catch (again) {
           // Two fast failures in a row mean the route itself is broken (its worker closed, say),
           // not one dropped connection: move to the standby rather than keep failing here.
           if (route !== primary || !secondary) throw again;
           log({ event: "failover", reason: String(again?.message ?? again).slice(0, 60) });
           promote();
-          return attempt(primary);
+          return retry(primary);
         }
       }
       if (!secondary) {
@@ -465,12 +470,12 @@ export async function createAtmosClient({
           standbyReady(BOOT_TIMEOUT_MS).then(() => null),
         ]);
         if (first) { if ("err" in first) throw first.err; return first.r; }
-        if (route !== primary) return attempt(primary);
+        if (route !== primary) return retry(primary);
         if (!secondary) throw new Error("no route answered");
       }
       log({ event: "failover" });
       promote();
-      return attempt(primary);
+      return retry(primary);
     }
   }
 

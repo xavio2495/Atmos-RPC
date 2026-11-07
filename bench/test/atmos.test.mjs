@@ -24,6 +24,7 @@ globalThis.WebSocket = class { constructor() { setTimeout(() => (net.gatewaysDow
 const workers = [];
 class FakeWorker {
   static readyDelayMs = 0;
+  static stallNew = false;
   static caps = { "capped.example": 2 };
   // Methods whose replies take this long, like a block's access list through the mixnet.
   static slow = {};
@@ -32,6 +33,8 @@ class FakeWorker {
     this.posts = [];
     this.delayMs = 5;
     this.ready = sleep(FakeWorker.readyDelayMs);
+    // A route can be up yet never answer: let its probe through, then stall what follows.
+    if (FakeWorker.stallNew) this.ready.then(() => setTimeout(() => (this.stall = true), 50));
     workers.push(this);
   }
   async fetch(url, init = {}) {
@@ -414,6 +417,17 @@ Object.assign(audit, {
     const r = await c.bulk(URL_A, rpc(3, "eth_getBlockAccessList", ["0x3"]));
     assert.equal(r.result, 'eth_getBlockAccessList:["0x3"]');
     assert.notEqual(workers.at(-1), lane, "a new route carries the lane");
+    c.close();
+  },
+});
+Object.assign(audit, {
+  async "C14: every call settles even when every route stalls"() {
+    const { c } = await client();
+    for (const w of workers) w.stall = true; // the primary and the standby both stop answering
+    FakeWorker.stallNew = true; // and so does any route booted from now on
+    const outcome = await withCap(c.request(URL_A, rpc(1, "eth_blockNumber")).then(() => "answered", (e) => `rejected: ${e.message}`), 90_000);
+    FakeWorker.stallNew = false;
+    assert.match(outcome, /rejected/);
     c.close();
   },
 });
