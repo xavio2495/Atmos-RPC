@@ -257,6 +257,8 @@ function hedgeDelay(latencies, lambdaMs) {
 //     change-check asks, through the mixnet. bulkLanes: how many separate routes carry bulk() calls.
 //     bulkTunnel: extra tunnel options for the bulk lanes only (e.g. a larger reply-SURB supply for
 //     large replies); the lanes' exits can see them, but those lanes carry only public data.
+//     Measured worse at 50 open / 8 per packet: the extra SURBs ride in outgoing packets at the
+//     client's send rate and slowed lists and wallet calls alike. Leave unset unless re-measured.
 //     bulkReplace: replace a bulk lane that is alive but slower than the block rate.
 export async function createAtmosClient({
   bootstrapProvider, probeUrl, log = () => {}, Worker = AnonRpcWorker,
