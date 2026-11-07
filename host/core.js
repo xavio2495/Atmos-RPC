@@ -1,4 +1,4 @@
-import { createAtmosClient } from "../client/atmos.js";
+import { createAtmosClient, NYM_SPECIFIER, NYM_WORKER_LIMITS } from "../client/atmos.js";
 import { createVerifiedReader, SEPOLIA } from "../client/verify.js";
 import { createExecutor } from "../client/evm.js";
 import { createReceiptChecker } from "../client/receipts.js";
@@ -19,7 +19,6 @@ const LOCAL = {
 // so a boot sends nothing to an RPC provider from the host's own address. The
 // bundle still has to match the pinned hash, so a stale download list can only
 // make a boot fail, never run a different worker.
-const NYM_SPECIFIER = "0x3acd9742c68f6d993066ae25533e09b9e1f60ed0";
 const NYM_WORKER_HASH = "0xf13a448a8721b9d0b20da3d5b80ffe00bf4c5bb3aae812a38d3d1e3bc81fceb8";
 const NYM_RESOLVERS = [
   "https://cdn.jsdelivr.net/npm/@nymproject/anon-rpc-worker@0.1.0/dist/nym-anon-rpc-worker.js",
@@ -43,7 +42,7 @@ function makeBootstrapProvider(log) {
   return {
     request: async ({ method, params }) => {
       const call = method === "eth_call" ? params?.[0] : null;
-      if (call && String(call.to).toLowerCase() === NYM_SPECIFIER) {
+      if (call && String(call.to).toLowerCase() === NYM_SPECIFIER.toLowerCase()) {
         if (call.data === SEL_WORKER_HASH) return NYM_WORKER_HASH;
         if (call.data === SEL_WORKER_RESOLVERS) return abiStringArray(NYM_RESOLVERS);
       }
@@ -64,6 +63,7 @@ const replyTo = (body, result) => ({ jsonrpc: "2.0", id: body.id, result });
 
 const SHAPED_INTERVALS = { read: 4_000, proof: 8_000 };
 const ANY = "0x0000000000000000000000000000000000000000";
+export { NYM_WORKER_LIMITS };
 const BLOCK_METHODS = new Set(["eth_getBlockByNumber", "eth_getBlockByHash"]);
 const SHAPED_SEED = [
   { method: "eth_getBalance", params: [ANY, "latest"] },

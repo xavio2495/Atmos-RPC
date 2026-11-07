@@ -37,7 +37,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const { handle, status } = RUNTIME === "node" ? await startNode() : await startChromium();
 
 async function startNode() {
-  const { startAtmos } = await import("./dist/core.node.js");
+  const { startAtmos, NYM_WORKER_LIMITS } = await import("./dist/core.node.js");
   const { AnonRpcWorker } = await import("../harness/node-harness/dist/host.js");
   // The Nym worker is built for a browser: it needs WebAssembly room, a WebSocket
   // and the browser platform pieces, all granted by the Node harness.
@@ -46,9 +46,7 @@ async function startNode() {
       super({
         ...init,
         capabilities: { fetch: true, webSocket: true, web: true },
-        // One synchronous entry into the worker takes at most ~1.4 s (its first
-        // evaluation, which loads the wasm); 10 s leaves room for a slower CPU.
-        limits: { memoryBytes: 1024 * 1024 * 1024, deadlineMs: 10_000 },
+        limits: NYM_WORKER_LIMITS,
         bundleCacheDir: process.env.ATMOS_BUNDLE_CACHE ?? join(here, ".bundles"),
       });
     }
