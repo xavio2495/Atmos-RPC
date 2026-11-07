@@ -29,6 +29,7 @@ const BRANCH = {
 const SLOTS_PER_PERIOD = 8192;
 const DST = "BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
 const MAX_HEAD_AGE_S = 120;
+const MAX_LIST_LAG = 2;
 const HEAD_REFRESH_MS = 12_000;
 const EMPTY_TRIE = "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421";
 const EMPTY_CODE = "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470";
@@ -208,7 +209,8 @@ function trieGet(root, key, proof) {
 // address the wallet reads.
 // `accessLists`: providers serving EIP-7928 access lists. When given, proven accounts
 // are kept current from every block's verified list, so repeat reads name nothing.
-export async function createVerifiedReader({ request, beaconGet, checkpoint, providers, chain = MAINNET, split = false, accessLists = null, log = () => {} }) {
+// `listRequest`: the transport for those lists (large replies), by default `request`.
+export async function createVerifiedReader({ request, beaconGet, checkpoint, providers, chain = MAINNET, split = false, accessLists = null, listRequest = request, log = () => {} }) {
   // The first beacon request on a new route can fail in transit, which is not the
   // same as the checkpoint being unknown, so it is tried a few times.
   let boot, last;
@@ -290,7 +292,7 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
           // usually reaches one that has it.
           for (let i = 0; ; i++) {
             try {
-              return await onProviders({ jsonrpc: "2.0", id: 7, method: "eth_getBlockAccessList", params: [hash] }, (l) => l, accessLists);
+              return await onProviders({ jsonrpc: "2.0", id: 7, method: "eth_getBlockAccessList", params: [hash] }, (l) => l, accessLists, listRequest);
             } catch (e) {
               if (i === 3 || !/not available|does not exist|not found/i.test(String(e?.message))) throw e;
             }
@@ -300,6 +302,16 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
         log,
       })
     : null;
+  // With access lists, reads are answered at the last block whose list has been applied,
+  // while that is at most MAX_LIST_LAG blocks behind the verified head, so a held account
+  // is never proven again and never waits for a list. Further behind, reads use the head.
+  async function readHead() {
+    const top = await currentHead();
+    const at = follower?.size ? follower.block : -1;
+    if (at < 0 || at >= top.number || top.number - at > MAX_LIST_LAG) return top;
+    const h = await headerByNumber(at);
+    return { number: at, stateRoot: h.stateRoot, hash: h.hash.toLowerCase(), time: top.time };
+  }
   const followHead = async () => {
     if (follower && head) await follower.follow(head.number).catch((e) => log({ event: "access-list-failed", reason: String(e?.message ?? e).slice(0, 80) }));
   };
@@ -311,12 +323,12 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
 
   // One call, tried on each provider in turn; only this call moves on, not its batch.
   // A throttled provider gets one more try after a short pause before moving on.
-  async function onProviders(body, check, order = providers) {
+  async function onProviders(body, check, order = providers, send = request) {
     let last;
     for (const url of order) {
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          const r = await request(url, body);
+          const r = await send(url, body);
           if (r.error) throw new Error(r.error.message);
           return check(r.result);
         } catch (e) {
@@ -338,12 +350,8 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
 
   async function account(address, slots, head, withCode) {
     address = address.toLowerCase();
-    // A held account waits for the lists up to this head rather than being proven again.
-    if (follower?.holds(address)) {
-      await follower.follow(head.number).catch((e) => log({ event: "access-list-failed", reason: String(e?.message ?? e).slice(0, 80) }));
-      const held = follower.get(address, slots, withCode, head.number);
-      if (held) return held;
-    }
+    const held = follower?.get(address, slots, withCode, head.number);
+    if (held) return held;
     if (cacheBlock !== head.number) {
       cacheBlock = head.number;
       cache.clear();
@@ -388,7 +396,7 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
     const tag = method === "eth_getStorageAt" ? params[2] : params[1];
     if (tag !== undefined && tag !== "latest") throw new Error("not verifiable: block tag");
     const slots = method === "eth_getStorageAt" ? ["0x" + BigInt(params[1]).toString(16).padStart(64, "0")] : [];
-    const a = await account(params[0], slots, await currentHead(), method === "eth_getCode");
+    const a = await account(params[0], slots, await readHead(), method === "eth_getCode");
     if (method === "eth_getBalance") return a.balance;
     if (method === "eth_getTransactionCount") return a.nonce;
     if (method === "eth_getStorageAt") return a.storage[slots[0]];
@@ -437,7 +445,7 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
     const reply = (result) => ({ jsonrpc: "2.0", id: body.id, result });
     const params = body.params ?? [];
     if (body.method === "eth_chainId") return reply("0x" + chain.chainId.toString(16));
-    if (body.method === "eth_blockNumber") return reply("0x" + (await currentHead()).number.toString(16));
+    if (body.method === "eth_blockNumber") return reply("0x" + (await readHead()).number.toString(16));
     // Block objects carry verified header fields; their transaction list is the provider's.
     if (body.method === "eth_getBlockByNumber" && !params[1]) return reply(await headerByNumber(params[0]));
     if (body.method === "eth_getBlockByHash" && !params[1]) return reply(await findHeader(params[0]));
@@ -464,7 +472,7 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
     // How many accounts the access lists keep current, and at which block.
     following: () => (follower ? { accounts: follower.size, block: follower.block } : null),
     request: verifiedRequest,
-    head: currentHead,
+    head: readHead,
     header: headerByNumber,
     block: findHeader,
     account,

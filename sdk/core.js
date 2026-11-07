@@ -137,6 +137,9 @@ export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false
       providers: PROVIDERS,
       chain: SEPOLIA,
       accessLists: bal ? ACCESS_LISTS : null,
+      // Access lists are large, public and the same for everyone: they go on the client's
+      // bulk lane (its own route), unshaped, so they never hold up the wallet's calls.
+      listRequest: traced(client.bulk, (body) => ({ calls: 1, bytes: JSON.stringify(body).length, bulk: true })),
       log,
     });
     if (closed) close();
