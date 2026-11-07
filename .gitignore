@@ -35,6 +35,7 @@ package-lock.json
 !bench/package-lock.json
 !harness/package-lock.json
 !host/package-lock.json
+!web/package-lock.json
 
 # typescript
 *.tsbuildinfo
