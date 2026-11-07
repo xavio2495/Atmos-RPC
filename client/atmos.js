@@ -250,11 +250,13 @@ function hedgeDelay(latencies, lambdaMs) {
 //     Nym worker); with a custom hash and no resolvers, the resolvers are read from the specifier.
 //   nymApis: Nym directory APIs, tried in order. specifierRpc: the mainnet provider the specifier
 //     change-check asks, through the mixnet. bulkLanes: how many separate routes carry bulk() calls.
+//     bulkTunnel: extra tunnel options for the bulk lanes only (e.g. a larger reply-SURB supply for
+//     large replies); the lanes' exits can see them, but those lanes carry only public data.
 export async function createAtmosClient({
   bootstrapProvider, probeUrl, log = () => {}, Worker = AnonRpcWorker,
   hedgeLambdaMs = null, rotateMs = null, overflow = false, tunnel = {}, padBytes = 0,
   workerHash = NYM_WORKER_HASH, workerResolvers = workerHash === NYM_WORKER_HASH ? NYM_WORKER_RESOLVERS : null,
-  nymApis = NYM_APIS, specifierRpc = SPECIFIER_RPC, bulkLanes = 1,
+  nymApis = NYM_APIS, specifierRpc = SPECIFIER_RPC, bulkLanes = 1, bulkTunnel = {},
 }) {
   if (Array.isArray(nymApis) === false || nymApis.length === 0) throw new TypeError("nymApis must be a non-empty list");
   let directory = await loadBand(nymApis);
@@ -266,7 +268,7 @@ export async function createAtmosClient({
   const exitsInUse = new Set();
   let closed = false;
 
-  async function bootRoute() {
+  async function bootRoute(extraTunnel = {}) {
     for (let attempt = 0; attempt < 4 && !closed; attempt++) {
       if (Date.now() - directory.loadedAt > 3_600_000) directory = await loadBand(nymApis).catch(() => directory);
       let entry = null;
@@ -281,7 +283,7 @@ export async function createAtmosClient({
         address: NYM_SPECIFIER,
         // A pinned exit that hasn't answered the handshake in 15 s is dropped (the tunnel's default
         // is 60 s); a healthy handshake takes 1–3 s. Client-side only, so nothing the exit can see.
-        config: { connectTimeoutMs: 15_000, ...tunnel, preferredGateway: entry.ed25519_identity_pubkey, preferredIpr: exit },
+        config: { connectTimeoutMs: 15_000, ...tunnel, ...extraTunnel, preferredGateway: entry.ed25519_identity_pubkey, preferredIpr: exit },
         preExisting: { rpcProvider },
         expectedHash: workerHash,
         // On harnesses that bridge the network (the Atmos Node harness), the worker may reach only
@@ -468,7 +470,7 @@ export async function createAtmosClient({
   let nextLane = 0;
   function laneRoute(lane) {
     if (lane.route) return Promise.resolve(lane.route);
-    lane.booting ??= bootRoute()
+    lane.booting ??= bootRoute(bulkTunnel)
       .then((r) => {
         if (closed) { r.close(); throw new Error("client closed"); }
         return (lane.route = r);

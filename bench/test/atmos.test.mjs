@@ -342,6 +342,17 @@ Object.assign(audit, {
     c.close();
   },
 });
+Object.assign(audit, {
+  async "BAL: bulkTunnel options reach the bulk lanes only"() {
+    const { c } = await client({ bulkTunnel: { openReplySurbs: 100, dataReplySurbs: 4 } });
+    await c.bulk(URL_A, rpc(1, "eth_blockNumber"));
+    const lane = workers.at(-1);
+    assert.equal(lane.init.config.openReplySurbs, 100);
+    assert.equal(lane.init.config.dataReplySurbs, 4);
+    assert.ok(workers.slice(0, -1).every((w) => w.init.config.openReplySurbs === undefined), "wallet routes keep the defaults");
+    c.close();
+  },
+});
 const withCap = (p, ms) => Promise.race([p, sleep(ms).then(() => { throw new Error(`no answer in ${ms} ms`); })]);
 if (!process.argv.includes("--no-audit")) Object.assign(tests, audit);
 
