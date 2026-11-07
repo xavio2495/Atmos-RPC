@@ -484,8 +484,12 @@ export async function createAtmosClient({
     let route;
     try {
       route = await laneRoute(lane);
-      return await withTimeout(postJson(route.worker, url, body, padBytes), BULK_TIMEOUT_MS, "bulk");
+      const start = performance.now();
+      const reply = await withTimeout(postJson(route.worker, url, body, padBytes), BULK_TIMEOUT_MS, "bulk");
+      log({ event: "bulk", lane: lanes.indexOf(lane), ms: Math.round(performance.now() - start), bytes: JSON.stringify(reply).length });
+      return reply;
     } catch (e) {
+      log({ event: "bulk-failed", lane: lanes.indexOf(lane), reason: String(e?.message ?? e).slice(0, 80) });
       if (e?.message === "bulk timeout" && route && lane.route === route) { lane.route = null; route.close(); }
       throw e;
     } finally {

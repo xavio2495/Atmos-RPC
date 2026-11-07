@@ -325,7 +325,7 @@ Object.assign(audit, {
 });
 Object.assign(audit, {
   async "BAL: bulkLanes 2 carries two fetches at once on two routes"() {
-    const { c } = await client({ bulkLanes: 2 });
+    const { c, events } = await client({ bulkLanes: 2 });
     FakeWorker.slow = { eth_getBlockAccessList: 800 };
     await Promise.all([c.bulk(URL_A, rpc(0, "eth_blockNumber"))]); // lane 1 boots
     await Promise.all([c.bulk(URL_A, rpc(0, "eth_blockNumber"))]); // lane 2 boots
@@ -337,6 +337,8 @@ Object.assign(audit, {
     assert.ok(ms < 1_400, `two fetches took ${Math.round(ms)} ms, so they ran in parallel`);
     const carriers = workers.filter((w) => w.posts.some((p) => p.body.includes("eth_getBlockAccessList")));
     assert.equal(carriers.length, 2);
+    const logged = events.filter((e) => e.event === "bulk" && e.bytes > 0);
+    assert.deepEqual([...new Set(logged.map((e) => e.lane))].sort(), [0, 1], "each bulk reply is logged with its lane");
     c.close();
   },
 });
