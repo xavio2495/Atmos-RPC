@@ -38,6 +38,8 @@ const HEDGE_MIN_SAMPLES = 20;
 const STANDBY_RETRY_MS = 5_000;
 const MAX_QUEUE_WAIT_SAMPLES = 1_000;
 const MIN_BAND = 6;
+// Large background fetches (e.g. a block's access list, 70–160 KB) get this long on their own lane.
+const BULK_TIMEOUT_MS = 60_000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function withTimeout(p, ms, what) {
@@ -458,8 +460,36 @@ export async function createAtmosClient({
       if (typeof r?.result === "string" && r.result.toLowerCase() !== workerHash.toLowerCase()) log({ event: "specifier-changed", live: r.result });
     }, () => {});
 
+  // A separate route for large background fetches. A big reply holds its route's tunnel for
+  // seconds, so on the wallet's route it would queue the wallet's calls behind it and trip the
+  // attempt timeout into needless failovers. Booted on first use; a stalled lane is replaced.
+  let bulkRoute = null;
+  let bulkBooting = null;
+  function bulkLane() {
+    if (bulkRoute) return Promise.resolve(bulkRoute);
+    bulkBooting ??= bootRoute()
+      .then((r) => {
+        if (closed) { r.close(); throw new Error("client closed"); }
+        return (bulkRoute = r);
+      })
+      .finally(() => { bulkBooting = null; });
+    return bulkBooting;
+  }
+  async function bulk(url, body) {
+    if (Array.isArray(body)) throw new TypeError("send JSON-RPC calls one at a time; batching is automatic");
+    const route = await bulkLane();
+    try {
+      return await withTimeout(route.send(url, body), BULK_TIMEOUT_MS, "bulk");
+    } catch (e) {
+      if (e?.message === "bulk timeout" && bulkRoute === route) { bulkRoute = null; route.close(); }
+      throw e;
+    }
+  }
+
   return {
     request,
+    // For large background reads that must not delay wallet calls: own route, no failover, 60 s cap.
+    bulk,
     // Milliseconds each JSON-RPC call spent queued behind a request in flight on its route (the last 1,000).
     stats: () => ({ queueWaitsMs: [...queueWaits] }),
     fetch: (url, init) => withFailover(url, (route) => route.fetch(url, init)),
@@ -467,6 +497,7 @@ export async function createAtmosClient({
       closed = true;
       clearTimeout(rotation);
       clearTimeout(standbyRetry);
+      bulkRoute?.close();
       primary.close();
       secondary?.close();
       retiring.forEach((r) => r.close());

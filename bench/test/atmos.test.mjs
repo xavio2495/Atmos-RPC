@@ -25,6 +25,8 @@ const workers = [];
 class FakeWorker {
   static readyDelayMs = 0;
   static caps = { "capped.example": 2 };
+  // Methods whose replies take this long, like a block's access list through the mixnet.
+  static slow = {};
   constructor(init) {
     this.init = init;
     this.posts = [];
@@ -36,7 +38,7 @@ class FakeWorker {
     if (init.method === "HEAD") { (this.heads ??= []).push(url); return { ok: true }; }
     this.posts.push({ url, body: init.body });
     if (this.stall) return new Promise(() => {});
-    await sleep(this.delayMs);
+    await sleep(FakeWorker.slow[JSON.parse(init.body).method] ?? this.delayMs);
     if (this.failNext) { this.failNext--; throw new Error("connection closed"); }
     const req = JSON.parse(init.body);
     if (Array.isArray(req) && req.length > (FakeWorker.caps[new URL(url).host] ?? Infinity)) {
@@ -279,6 +281,32 @@ Object.assign(audit, {
     await sleep(50);
     const heads = workers.slice(1).flatMap((w) => w.heads ?? []);
     assert.ok(!heads.some((u) => u.includes("publicnode")), heads.join(","));
+    c.close();
+  },
+});
+Object.assign(audit, {
+  async "BAL: a slow fetch on the wallet lane trips the attempt timeout into a failover (the jam)"() {
+    const { c, events } = await client();
+    FakeWorker.slow = { eth_getBlockAccessList: 10_000 };
+    await c.request(URL_A, rpc(1, "eth_getBlockAccessList", ["0x1"]));
+    FakeWorker.slow = {};
+    assert.ok(events.some((e) => e.event === "failover"), "the old path fails over on a large reply");
+    c.close();
+  },
+
+  async "BAL: bulk() keeps a slow fetch off the wallet lane: no failover, wallet calls stay fast"() {
+    const { c, events } = await client();
+    FakeWorker.slow = { eth_getBlockAccessList: 10_000 };
+    const big = c.bulk(URL_A, rpc(1, "eth_getBlockAccessList", ["0x1"]));
+    await sleep(3_000); // the bulk lane has booted and its fetch is in flight
+    const t = performance.now();
+    const r = await c.request(URL_A, rpc(2, "eth_getBalance", ["0x2"]));
+    const walletMs = performance.now() - t;
+    assert.equal(r.result, 'eth_getBalance:["0x2"]');
+    assert.ok(walletMs < 200, `wallet call took ${Math.round(walletMs)} ms`);
+    assert.equal((await big).result, 'eth_getBlockAccessList:["0x1"]');
+    FakeWorker.slow = {};
+    assert.equal(events.filter((e) => e.event === "failover").length, 0);
     c.close();
   },
 });
