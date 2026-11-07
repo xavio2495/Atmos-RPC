@@ -103,3 +103,4 @@ harness/*/dist/
 
 # Editor settings
 .vscode/
+.env*
