@@ -106,7 +106,10 @@ export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false
   const counts = { verified: 0, advisory: 0, plain: 0, local: 0, failed: 0, prefetched: 0 };
   let reader, client, executor, receipts, transport, shaper, prefetcher, closed = false;
 
-  const ready = (async () => {
+  let startError;
+  // One start: a route, the checkpoint, the light client. A failed attempt (a route that
+  // times out, a bootstrap not served) is retried with backoff rather than ending the host.
+  async function startOnce() {
     // Shaped mode also pads every request body to a fixed size (in 2 KB steps),
     // so batch sizes stop showing what is inside them.
     // Routes rotate about every 10 minutes, so no single route's timing lasts
@@ -117,7 +120,7 @@ export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false
       log,
       rotateMs: 10 * 60_000,
       // Access lists get two bulk lanes of their own, fetched alternately.
-      ...(bal ? { bulkLanes: 2 } : {}),
+      ...(bal ? { bulkLanes: 2, bulkReplace: true } : {}),
       ...(Worker ? { Worker } : {}),
       ...(shape ? { padBytes: 2048 } : {}),
     });
@@ -130,12 +133,14 @@ export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false
     // start from a fixed mix of wallet-like calls.
     shaper = shape ? createShaper({ request: wire, open: PROVIDERS, intervals: SHAPED_INTERVALS, seed: SHAPED_SEED }) : null;
     transport = shaper ? shaper.request : wire;
-    checkpoint ??= await agreedCheckpoint(fetchWire);
-    log({ event: "checkpoint", root: checkpoint });
+    // A given checkpoint is kept; an agreed one is taken afresh on each attempt, since
+    // a beacon API can decline to serve a particular root.
+    const root = checkpoint ?? (await agreedCheckpoint(fetchWire));
+    log({ event: "checkpoint", root });
     reader = await createVerifiedReader({
       request: transport,
       beaconGet: (path) => fetchWire(BEACONS[0] + path).then((r) => r.json()),
-      checkpoint,
+      checkpoint: root,
       providers: PROVIDERS,
       chain: SEPOLIA,
       accessLists: bal ? ACCESS_LISTS : null,
@@ -148,6 +153,24 @@ export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false
     if (closed) close();
     executor = createExecutor({ reader, chain: SEPOLIA });
     receipts = createReceiptChecker({ reader });
+  }
+  const ready = (async () => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await startOnce();
+        startError = undefined;
+        return;
+      } catch (e) {
+        startError = String(e?.message ?? e).slice(0, 200);
+        log({ event: "start-failed", attempt, reason: startError });
+        reader?.close();
+        shaper?.close();
+        client?.close();
+        reader = client = shaper = undefined;
+        if (closed) throw e;
+        await new Promise((r) => setTimeout(r, Math.min(60_000, 5_000 * 2 ** attempt)));
+      }
+    }
   })();
 
   // eth_call and eth_estimateGas run locally on proven state; null means "not handled here".
@@ -172,6 +195,8 @@ export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false
   // One JSON-RPC call in, one response out. Calls the verifier can't check go to
   // the first provider unverified and are counted, so the host's share is visible.
   async function answer(body) {
+    // While a failed start is being retried, calls fail at once with its reason.
+    if (!reader && startError) throw new Error(`not started yet: ${startError}`);
     await ready;
     if (body.method in LOCAL) {
       counts.local++;
@@ -243,11 +268,7 @@ export function startAtmos({ checkpoint, Worker, shape = false, prefetch = false
 
   // A failed start (no route, or the light client could not bootstrap) is
   // reported through status and to callers, rather than ending the process.
-  let startError;
-  ready.catch((e) => {
-    startError = String(e?.message ?? e).slice(0, 200);
-    log({ event: "start-failed", reason: startError });
-  });
+  ready.catch(() => {});
 
   function close() {
     closed = true;
