@@ -31,6 +31,9 @@ need git
 need node
 need npm
 major=$(node -p 'process.versions.node.split(".")[0]')
+# The launcher runs this exact Node: a systemd service doesn't get the login shell's PATH
+# (nvm, fnm, asdf and similar install Node outside the system path).
+NODE_BIN=$(command -v node)
 [ "$major" -ge 24 ] || die "Node 24 or newer is required (found $(node -v))"
 
 # Fetch only what the host needs: the client, the SDK, the harness and the host.
@@ -58,7 +61,7 @@ cat > "$DIR/atmos-host" <<EOF
 set -eu
 cd "$DIR/host"
 export PORT="\${PORT:-$PORT}"
-exec node --dns-result-order=ipv4first server.mjs
+exec "$NODE_BIN" --dns-result-order=ipv4first server.mjs
 EOF
 chmod +x "$DIR/atmos-host"
 
