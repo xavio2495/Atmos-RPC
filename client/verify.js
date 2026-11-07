@@ -313,7 +313,8 @@ export async function createVerifiedReader({ request, beaconGet, checkpoint, pro
     return { number: at, stateRoot: h.stateRoot, hash: h.hash.toLowerCase(), time: top.time };
   }
   const followHead = async () => {
-    if (follower && head) await follower.follow(head.number).catch((e) => log({ event: "access-list-failed", reason: String(e?.message ?? e).slice(0, 80) }));
+    // A list fetch replaced by a newer one on the bulk lane is skipped, not a failure.
+    if (follower && head) await follower.follow(head.number).catch((e) => /superseded/.test(String(e?.message)) || log({ event: "access-list-failed", reason: String(e?.message ?? e).slice(0, 80) }));
   };
   // Every block's access list is fetched on the head clock, not when the wallet reads.
   const ticker = setInterval(() => {
