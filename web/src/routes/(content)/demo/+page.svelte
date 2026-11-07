@@ -241,7 +241,7 @@
 	</div>
 
 	<div class="settings">
-		{#each [{ label: 'Access-list updates', note: 'EIP-7928 · repeat reads name nothing', get: () => bal, set: (v: boolean) => (bal = v) }, { label: 'Constant-rate schedule', note: 'fixed clock with dummies · up to 4 s a read', get: () => shape, set: (v: boolean) => (shape = v) }] as o (o.label)}
+		{#each [{ label: 'Access-list updates', note: 'EIP-7928, experimental · repeat reads can name nothing', get: () => bal, set: (v: boolean) => (bal = v) }, { label: 'Constant-rate schedule', note: 'fixed clock with dummies · up to 4 s a read', get: () => shape, set: (v: boolean) => (shape = v) }] as o (o.label)}
 			<button
 				class="switch"
 				role="switch"
