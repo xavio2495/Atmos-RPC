@@ -445,7 +445,18 @@ export async function createAtmosClient({
     } catch (e) {
       if (route !== primary) return attempt(primary);
       // A fast error means the provider dropped the connection, not that the route stalled.
-      if (e?.message !== "attempt timeout") return attempt(route);
+      if (e?.message !== "attempt timeout") {
+        try {
+          return await attempt(route);
+        } catch (again) {
+          // Two fast failures in a row mean the route itself is broken (its worker closed, say),
+          // not one dropped connection: move to the standby rather than keep failing here.
+          if (route !== primary || !secondary) throw again;
+          log({ event: "failover", reason: String(again?.message ?? again).slice(0, 60) });
+          promote();
+          return attempt(primary);
+        }
+      }
       if (!secondary) {
         // No standby yet: take the stalled route's answer if it comes, or move once a standby is ready.
         ensureSecondary();
@@ -519,12 +530,19 @@ export async function createAtmosClient({
       const start = performance.now();
       const reply = await withTimeout(postJson(route.worker, url, body, padBytes), BULK_TIMEOUT_MS, "bulk");
       const ms = Math.round(performance.now() - start);
+      lane.failures = 0;
       log({ event: "bulk", lane: lanes.indexOf(lane), ms, bytes: JSON.stringify(reply).length });
       noteBulkTime(lane, ms);
       return reply;
     } catch (e) {
       log({ event: "bulk-failed", lane: lanes.indexOf(lane), reason: String(e?.message ?? e).slice(0, 80) });
-      if (e?.message === "bulk timeout" && route && lane.route === route) { lane.route = null; route.close(); }
+      // A lane that hits the cap, or fails twice in a row, is replaced on the next call.
+      lane.failures = (lane.failures ?? 0) + 1;
+      if (route && lane.route === route && (e?.message === "bulk timeout" || lane.failures >= 2)) {
+        lane.route = null;
+        lane.failures = 0;
+        route.close();
+      }
       throw e;
     } finally {
       q.busy = false;

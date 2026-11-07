@@ -39,6 +39,7 @@ class FakeWorker {
     this.posts.push({ url, body: init.body });
     if (this.stall) return new Promise(() => {});
     await sleep(FakeWorker.slow[JSON.parse(init.body).method] ?? this.delayMs);
+    if (this.closed) throw new Error("worker closed");
     if (this.failNext) { this.failNext--; throw new Error("connection closed"); }
     const req = JSON.parse(init.body);
     if (Array.isArray(req) && req.length > (FakeWorker.caps[new URL(url).host] ?? Infinity)) {
@@ -390,6 +391,29 @@ Object.assign(audit, {
     for (let i = 1; i <= 5; i++) await c.bulk(URL_A, rpc(i, "eth_getBlockAccessList", [`0x${i}`]));
     performance.now = realNow;
     assert.ok(!events.some((e) => e.event === "bulk-lane-replaced"));
+    c.close();
+  },
+});
+Object.assign(audit, {
+  async "R1: a primary whose worker died (fast errors) fails over to the standby"() {
+    const { c, events } = await client();
+    workers[0].closed = true; // every call on it now fails at once with "worker closed"
+    const r = await withCap(c.request(URL_A, rpc(1, "eth_blockNumber")), 2_000);
+    assert.equal(r.result, "eth_blockNumber:[]");
+    assert.ok(events.some((e) => e.event === "failover"));
+    c.close();
+  },
+
+  async "R2: a bulk lane that keeps erroring is replaced"() {
+    const { c } = await client();
+    await c.bulk(URL_A, rpc(0, "eth_blockNumber"));
+    const lane = workers.at(-1);
+    lane.failNext = 2;
+    await assert.rejects(c.bulk(URL_A, rpc(1, "eth_getBlockAccessList", ["0x1"])));
+    await assert.rejects(c.bulk(URL_A, rpc(2, "eth_getBlockAccessList", ["0x2"])));
+    const r = await c.bulk(URL_A, rpc(3, "eth_getBlockAccessList", ["0x3"]));
+    assert.equal(r.result, 'eth_getBlockAccessList:["0x3"]');
+    assert.notEqual(workers.at(-1), lane, "a new route carries the lane");
     c.close();
   },
 });
